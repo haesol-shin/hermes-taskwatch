@@ -24,5 +24,6 @@ Run all four before you report a change as done.
 
 ## Before you publish
 
+- Ask the maintainer before you post an issue, a comment, or a pull request, and before you merge.
 - Search your diff for personal values, tokens, and absolute local paths.
 - Add a `CHANGELOG.md` line under `Unreleased` if users can see the change.
