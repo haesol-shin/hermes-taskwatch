@@ -53,6 +53,8 @@ fix(gate): block completion when the review is for an old commit
 
 ## Pull requests
 
+Pull request titles use the same `type(scope): summary` format as commit titles.
+
 The pull request body is the evidence for merging this change now: tests run, CI, review, linked issue, and known limits. It stays on GitHub and is reached through the `#number` in the commit title.
 
 - Fill in the pull request template. Link the issue with `Closes #`.
@@ -62,6 +64,7 @@ The pull request body is the evidence for merging this change now: tests run, CI
   - A pull request with one commit is squash merged. The squash body follows the commit rules above.
   - A pull request that groups several steps is merged with a merge commit. Each step is one commit that follows the rules above. Fold review fixes into the commit they belong to before merging. The merge commit has only a title, `type(scope): pull request title (#number)`, and no body.
   - `git log --first-parent` shows one line per pull request.
+  - Merge only after the maintainer approves the current head, and pin it: `gh pr merge <number> --match-head-commit <approved SHA>`. A new commit after approval needs a new approval.
 
 ## Using AI tools
 
