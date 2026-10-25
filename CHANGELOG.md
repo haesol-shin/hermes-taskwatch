@@ -7,3 +7,4 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 ### Added
 - Project skeleton: documentation, CI, and issue and pull request templates.
 - Review guidelines for code, design, and source-checked documents, with a slot for project rules.
+- CI checks that review guidelines keep required sections, local references, and unique rule ids.

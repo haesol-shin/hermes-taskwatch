@@ -17,6 +17,7 @@ uv sync --locked
 uv run ruff check
 uv run ruff format --check
 uv run pytest
+uv run python scripts/check_review_docs.py
 ```
 
 CI runs the same commands. A pull request must pass all of them.
