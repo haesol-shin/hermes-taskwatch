@@ -8,3 +8,10 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - Project skeleton: documentation, CI, and issue and pull request templates.
 - Review guidelines for code, design, and source-checked documents, with a slot for project rules.
 - CI checks that review guidelines keep required sections, local references, and unique rule ids.
+- 13 review cases and a scorer that counts missed findings, false positives, severity mismatches, and verdict agreement from a human mapping.
+
+### Fixed
+
+- P0 is only a rule break about runtime behavior or data. Style and wording are P2.
+- The guideline check follows angle-bracket and reference-style local links.
+- The scorer fails when an answers or mappings directory is missing or has no cases.

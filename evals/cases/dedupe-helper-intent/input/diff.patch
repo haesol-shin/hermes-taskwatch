@@ -1,0 +1,32 @@
+--- a/src/session.py
++++ b/src/session.py
+@@ -8,19 +8,19 @@
+         super().__init__(message)
+ 
+ 
++def session_busy() -> SessionError:
++    return SessionError(
++        "session-busy",
++        "Another operation holds the session lock.",
++        "Wait for the other operation to finish, then retry.",
++    )
++
++
+ def acquire(lock) -> None:
+     if not lock.try_acquire():
+-        raise SessionError(
+-            "session-busy",
+-            "Another operation holds the session lock.",
+-            "Wait for the other operation to finish, then retry.",
+-        )
++        raise session_busy()
+ 
+ 
+ def renew(lock) -> None:
+     if not lock.held():
+-        raise SessionError(
+-            "session-busy",
+-            "Another operation holds the session lock.",
+-            "Wait for the other operation to finish, then retry.",
+-        )
++        raise session_busy()

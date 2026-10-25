@@ -1,0 +1,16 @@
+{
+  "purpose": "breaks a rule in the repository AGENTS.md",
+  "rules": [
+    "C-16",
+    "C-8"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/checks.py:19-20",
+      "severity": "P0",
+      "cause": "check_stale opens a network connection although AGENTS.md forbids it in a check and the Board protocol already supplies updated_at."
+    }
+  ]
+}

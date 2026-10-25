@@ -1,0 +1,25 @@
+--- a/src/player.py
++++ b/src/player.py
+@@ -15,6 +15,10 @@
+         await overlay.locator("button.accept").click(timeout=2000)
+ 
+ 
++async def press_play(frame) -> None:
++    await frame.locator(PLAY_BUTTON).click(force=True)
++
++
+ async def wait_until_playing(frame, clock) -> None:
+     deadline = clock.monotonic() + START_WAIT_SECONDS
+     while clock.monotonic() < deadline:
+@@ -27,9 +31,11 @@
+ async def open_embed(frame, url: str, clock) -> None:
+     await frame.goto(url)
+     await dismiss_consent(frame)
++    await press_play(frame)
+     await wait_until_playing(frame, clock)
+ 
+ 
+ async def replay(frame, clock) -> None:
+     await frame.reload()
++    await press_play(frame)
+     await wait_until_playing(frame, clock)

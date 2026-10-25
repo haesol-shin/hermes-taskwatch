@@ -1,0 +1,17 @@
+{
+  "purpose": "the added test passes for a broken variant",
+  "rules": [
+    "K-6",
+    "C-3"
+  ],
+  "verdict": "incorrect",
+  "broken_variant": "Drop the early exit and the final min() so retry_delay returns BASE_SECONDS * 2**attempt. Both tests still pass: the largest delay they reach is 32 seconds.",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "tests/test_backoff.py:8-10",
+      "severity": "P1",
+      "cause": "The cap test only tries attempts 0 to 4, where the delay never reaches 60 seconds, so it passes without any cap and the required cap test does not exist."
+    }
+  ]
+}

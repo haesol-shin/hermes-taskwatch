@@ -1,0 +1,16 @@
+{
+  "purpose": "data loss on a realistic path",
+  "rules": [
+    "K-1",
+    "C-8"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/downloader.py:28-33",
+      "severity": "P1",
+      "cause": "A non-empty same-named file in a subfolder is recorded downloaded, so the fetch returns before the byte check and the real attachment is never fetched."
+    }
+  ]
+}

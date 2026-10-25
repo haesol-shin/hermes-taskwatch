@@ -1,0 +1,29 @@
+--- /dev/null
++++ b/src/backoff.py
+@@ -0,0 +1,13 @@
++"""Delay between retries."""
++
++BASE_SECONDS = 2.0
++CAP_SECONDS = 60.0
++
++
++def retry_delay(attempt: int) -> float:
++    delay = BASE_SECONDS
++    for _ in range(attempt):
++        if delay >= CAP_SECONDS:
++            break
++        delay *= 2
++    return min(delay, CAP_SECONDS)
+--- /dev/null
++++ b/tests/test_backoff.py
+@@ -0,0 +1,10 @@
++from src.backoff import CAP_SECONDS, retry_delay
++
++
++def test_delay_doubles_from_two_seconds():
++    assert [retry_delay(attempt) for attempt in range(3)] == [2.0, 4.0, 8.0]
++
++
++def test_delay_never_exceeds_the_cap():
++    for attempt in range(5):
++        assert retry_delay(attempt) <= CAP_SECONDS

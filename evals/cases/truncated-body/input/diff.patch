@@ -1,0 +1,9 @@
+--- a/src/validator.py
++++ b/src/validator.py
+@@ -18,5 +18,5 @@
+             raise TransferError("too-large")
+ 
+     def finish(self, declared_length: int | None) -> None:
+-        if not self.size or (declared_length is not None and self.size != declared_length):
++        if not self.size or (declared_length is not None and self.size > declared_length):
+             raise TransferError("bad-length")

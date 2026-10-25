@@ -1,0 +1,8 @@
+{
+  "purpose": "no false positive on a duplicate-string cleanup",
+  "rules": [
+    "K-5"
+  ],
+  "verdict": "correct",
+  "findings": []
+}
