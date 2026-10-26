@@ -6,3 +6,5 @@ kind: standalone
 requires_hermes: ">=0.21.5"
 platforms:
   - linux
+provides_hooks:
+  - on_kanban_dispatch_tick

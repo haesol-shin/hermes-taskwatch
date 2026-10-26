@@ -81,6 +81,7 @@ def draft_config(root: str, board: str, profiles: tuple[str, ...]) -> dict:
         "hermes_root": root,
         "board": board,
         "profiles": list(profiles),
+        "watch_hook": False,
         "destinations": {"main_subscription": encoded, "user_notify": encoded},
         "executors": {
             "work": ["executor", "--brief", "{brief}", "--copy", "{copy}", "--output", "{output}"],

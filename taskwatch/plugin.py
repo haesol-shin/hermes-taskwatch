@@ -1,6 +1,7 @@
 """Plugin registration. CLI, hooks, and tools attach here as they land."""
 
 from .cli import handle_cli, setup_cli
+from .hook import dispatch_tick
 
 _context = None
 
@@ -15,6 +16,7 @@ def register(ctx) -> None:
         handler_fn=handle_cli,
         description="init, doctor, scan, and check",
     )
+    ctx.register_hook("on_kanban_dispatch_tick", dispatch_tick)
 
 
 def plugin_profile() -> str | None:

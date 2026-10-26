@@ -13,6 +13,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - `hermes taskwatch init`, `doctor`, `scan`, and `check`. The timer runs `scan` with the configured profile's `HERMES_HOME`, and `scan` takes the profile from the running Hermes, because Hermes consumes a `--profile` argument itself.
 - `scan` sends the user line through Hermes' send path. A line is recorded only after it was delivered, and an unanswered or unsubscribed warning is checked on every scan.
 - The checks read a card's exit code, outputs, fingerprint, basis, and reject count from run records and the live result, not from the card body.
+- Optional `watch_hook` scan on the Kanban dispatch tick, off unless set.
 
 ### Fixed
 
