@@ -1,0 +1,8 @@
+name: hermes-taskwatch
+version: 0.0.0
+description: Watch delegated Kanban work and block unchecked results from moving on.
+author: haesol-shin
+kind: standalone
+requires_hermes: ">=0.21.5"
+platforms:
+  - linux

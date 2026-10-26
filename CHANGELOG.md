@@ -9,6 +9,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - Review guidelines for code, design, and source-checked documents, with a slot for project rules.
 - CI checks that review guidelines keep required sections, local references, and unique rule ids.
 - 13 review cases and a scorer that counts missed findings, false positives, severity mismatches, and verdict agreement from a human mapping.
+- Hermes plugin entry that pins the tested Hermes version.
 
 ### Fixed
 
