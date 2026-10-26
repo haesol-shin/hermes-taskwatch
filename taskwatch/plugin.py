@@ -1,14 +1,20 @@
-"""Plugin registration. Later steps attach the CLI, hooks, and tools here."""
+"""Plugin registration. CLI, hooks, and tools attach here as they land."""
 
-TESTED_HERMES_VERSION = "0.21.5"
+from .cli import handle_cli, setup_cli
 
 _context = None
 
 
 def register(ctx) -> None:
-    """Accept the Hermes plugin context. Features attach in later steps."""
     global _context
     _context = ctx
+    ctx.register_cli_command(
+        name="taskwatch",
+        help="Watch Kanban work and block unchecked results",
+        setup_fn=setup_cli,
+        handler_fn=handle_cli,
+        description="init, doctor, scan, and check",
+    )
 
 
 def plugin_profile() -> str | None:

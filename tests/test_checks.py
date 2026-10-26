@@ -652,3 +652,23 @@ def test_read_error_failure_is_a_decision(tmp_path):
     )
     assert blocked.block
     assert blocked.causes[0].uncheckable
+
+
+def test_warning_cards_are_not_work_to_check(tmp_path):
+    config = _config(tmp_path)
+    warning = _card("warn-1", status="done", warning_for="card-1:blocked")
+    watched = watch(_input(config, FakeBoard((warning,))))
+    assert watched.causes == ()
+
+
+def test_deleted_warning_subscription_makes_the_user_notice_due(tmp_path):
+    config = _config(tmp_path)
+    cause = "card-1:ev-1"
+    history = (Warning(RECORD_VERSION, cause, NOW, "internal", "no action"),)
+
+    def due(subscribed, at=NOW + timedelta(seconds=1), received=None):
+        return user_notify_due(history, cause, at, config, received, "no action", subscribed)
+
+    assert not due(True)
+    assert due(False)
+    assert due(False, received=NOW)

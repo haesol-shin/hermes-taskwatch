@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from taskwatch.config import CommentRules, Config
-from taskwatch.protocol import BoardReader, BoardReadError, Card, Comment, Event
-from taskwatch.state import Approval, Review, Warning
+from .config import CommentRules, Config
+from .protocol import BoardReader, BoardReadError, Card, Comment, Event
+from .state import Approval, Review, Warning
 
 WORK_KINDS = frozenset({"review_requested"})
 IGNORED_KINDS = frozenset({"created", "warning"})
@@ -147,6 +147,7 @@ def user_notify_due(
     config: Config,
     received_at: datetime | None,
     summary: str,
+    subscribed: bool = True,
 ) -> bool:
     internal = _warnings(warnings, cause_id, "internal")
     if not internal:
@@ -154,7 +155,7 @@ def user_notify_due(
     quiet = timedelta(seconds=config.times.user_notify_unreceived_seconds)
     unreceived = received_at is None and now >= internal[-1].warned_at + quiet
     capped = len(internal) >= config.limits.rewarn_cap
-    if not unreceived and not capped:
+    if subscribed and not unreceived and not capped:
         return False
     told = _warnings(warnings, cause_id, "user")
     return not told or summary != told[-1].summary
@@ -260,7 +261,8 @@ def _need(inp: CheckInput) -> Card | Cause:
 def _cards(inp: CheckInput) -> tuple[Card, ...]:
     if inp.board.read_error():
         raise BoardReadError(inp.board.read_error())
-    return inp.board.cards()
+    # A warning card is taskwatch's own output. It is not work to check.
+    return tuple(card for card in inp.board.cards() if card.warning_for is None)
 
 
 def worker_finish(inp: CheckInput) -> tuple[Cause, ...]:

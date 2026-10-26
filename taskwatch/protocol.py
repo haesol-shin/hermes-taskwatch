@@ -53,6 +53,11 @@ class Card:
     basis: str | None = None
     dirty: bool = False
     applied_fingerprint: str | None = None
+    intent_path: str | None = None
+    spec_path: str | None = None
+    snapshot_path: str | None = None
+    # Set on a card taskwatch wrote itself. The value is the cause it warns about.
+    warning_for: str | None = None
 
 
 class BoardReader(Protocol):

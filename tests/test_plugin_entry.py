@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from taskwatch.plugin import TESTED_HERMES_VERSION, register
+from taskwatch.pin import TESTED_HERMES_VERSION
+from taskwatch.plugin import register
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,4 +49,12 @@ def test_root_register_loads_under_the_hermes_plugin_namespace():
 
 
 def test_register_accepts_a_context_without_hermes():
-    register(object())
+    seen = {}
+
+    class Ctx:
+        def register_cli_command(self, **kwargs):
+            seen.update(kwargs)
+
+    register(Ctx())
+    assert seen["name"] == "taskwatch"
+    assert seen["setup_fn"].__name__ == "setup_cli"

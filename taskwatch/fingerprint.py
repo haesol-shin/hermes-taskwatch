@@ -61,6 +61,11 @@ def uncommitted_changes(repo: Path) -> tuple[str, ...]:
     return tuple(line for line in proc.stdout.splitlines() if line.strip())
 
 
+def head_sha(repo: Path) -> str:
+    """The commit the work copy is on. The fingerprint of a Git result is this value."""
+    return git_fingerprint(_git_ok(repo, ["rev-parse", "HEAD"]).decode("utf-8").strip())
+
+
 def files_fingerprint(root: Path, relative_paths: Sequence[str]) -> str:
     return _list_hash(_file_rows(root, relative_paths))
 

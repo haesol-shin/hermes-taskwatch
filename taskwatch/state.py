@@ -254,6 +254,16 @@ class State:
                 warning.warned_at,
             )
 
+    def append_record(self, name: str, payload: Mapping[str, object], now: datetime) -> None:
+        """One versioned JSON line in a state file that has no typed reader (runs, rejects)."""
+        with self.lock():
+            _append_line(self.dir / name, {"version": RECORD_VERSION, **payload}, now)
+
+    def read_records(self, name: str) -> tuple[dict, ...]:
+        """Committed lines of such a file. A bad line raises RecordError."""
+        with self.lock():
+            return _read_objects(self.dir / name)
+
     def load(self) -> LoadedRecords:
         try:
             with self.lock():
