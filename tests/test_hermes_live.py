@@ -567,3 +567,69 @@ def _scan_flow(root: Path, capsys) -> None:
     assert scan() == ""
     # Only the one cause was ever warned about: the warning cards are not checked as work.
     assert set(warnings()) == {f"{blocked}:blocked"}
+
+
+def test_live_conversational_approvals(monkeypatch):
+    from taskwatch.evidence import Run, append_run
+    from taskwatch.hermes_board import open_board
+    from taskwatch.tools import taskwatch_approve, taskwatch_create
+
+    root = _tmp_root("tw-approve-")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    try:
+        config = _start(root)
+        start = {
+            "kind": "start",
+            "approval_key": "apr-tool",
+            "approved": "start the work",
+            "message_id": "msg-start",
+        }
+        first = json.loads(taskwatch_approve(start))
+        assert first["ok"] is True
+        assert json.loads(taskwatch_approve(start)) == first
+        intent, spec = root / "intent.md", root / "spec.md"
+        _write(intent, "## Source\nuser\n## Purpose\nwhy\n## Done\nresult\n## Approval\napr-tool\n")
+        _write(
+            spec,
+            "## Outputs\nresult.txt\n## Checklist\nlist.json\n## Out of scope\nnone\n"
+            "## Live\nfixture.invalid\n## Guidance\nnone\n## Model\nexample\n",
+        )
+        created = json.loads(
+            taskwatch_create(
+                {
+                    "approval_key": "apr-tool",
+                    "intent": str(intent),
+                    "spec": str(spec),
+                    "cards": [{"title": "approved work"}],
+                }
+            )
+        )
+        assert created["ok"] is True
+        card_id = created["card_id"]
+        assert _task(card_id).status == "ready"
+        work = root / "work"
+        _write(work / "result.txt", "approved result\n")
+        fingerprint = files_fingerprint(work, ("result.txt",))
+        state = State(root)
+        append_run(state, Run("run-1", card_id, "work", 0, str(work), False, ("result.txt",)), NOW)
+        apply = {
+            "kind": "apply",
+            "card_id": card_id,
+            "approved": "publish the result",
+            "message_id": "msg-apply",
+            "fingerprint": fingerprint,
+        }
+        approved = json.loads(taskwatch_approve(apply))
+        assert approved["ok"] is True
+        assert approved["approval"]["approved"] == apply["approved"]
+        assert state.load().approvals[-1].approved == apply["approved"]
+        assert json.loads(taskwatch_approve(apply)) == approved
+        assert [item.kind for item in state.load().approvals] == ["start", "link", "apply"]
+        assert (
+            EvidenceBoard(open_board(config.board), state).card(card_id).fingerprint == fingerprint
+        )
+        _write(work / "result.txt", "changed result\n")
+        assert json.loads(taskwatch_approve(apply))["ok"] is False
+        assert [item.kind for item in state.load().approvals] == ["start", "link", "apply"]
+    finally:
+        shutil.rmtree(root)

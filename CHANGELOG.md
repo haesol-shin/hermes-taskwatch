@@ -5,6 +5,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 ## [Unreleased]
 
 ### Added
+- `taskwatch_approve` records conversational start and apply approvals without hand-written JSON; retries return the existing approval and apply refuses a stale or dirty result.
 - Project skeleton: documentation, CI, and issue and pull request templates.
 - Review guidelines for code, design, and source-checked documents, with a slot for project rules.
 - CI checks that review guidelines keep required sections, local references, and unique rule ids.

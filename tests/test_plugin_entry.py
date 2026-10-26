@@ -59,10 +59,18 @@ def test_register_accepts_a_context_without_hermes():
             seen.setdefault("hooks", []).append(name)
 
         def register_tool(self, **kwargs):
-            seen.setdefault("tools", []).append(kwargs["name"])
+            seen.setdefault("tools", {})[kwargs["name"]] = kwargs
 
     register(Ctx())
     assert seen["name"] == "taskwatch"
     assert seen["hooks"] == ["on_kanban_dispatch_tick", "pre_tool_call"]
-    assert seen["tools"] == ["taskwatch_create", "taskwatch_reject"]
     assert seen["setup_fn"].__name__ == "setup_cli"
+    from taskwatch.tools import taskwatch_approve
+
+    approval = seen["tools"]["taskwatch_approve"]
+    assert approval["handler"] is taskwatch_approve
+    schema = approval["schema"]
+    assert "only after the user approved in the conversation" in schema["description"]
+    parameters = schema["parameters"]
+    assert {"kind", "approved", "message_id"} <= set(parameters["required"])
+    assert set(parameters["required"]) <= set(parameters["properties"])

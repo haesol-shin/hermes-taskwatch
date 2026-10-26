@@ -34,7 +34,7 @@ hermes taskwatch scan          # scan the board once
 hermes taskwatch check <card>  # show whether a card can move on, and why
 ```
 
-The main agent uses two tools, `taskwatch_create` and `taskwatch_reject`, to create cards and reject a gate.
+The main agent uses `taskwatch_approve` to record approval only after you approve in the conversation, `taskwatch_create` to create cards, and `taskwatch_reject` to reject a gate. For a start approval, pass `kind: "start"`, a stable `approval_key` derived from the approval message id, `approved` (what you approved), and `message_id`; then create the cards with that key. For an apply approval, pass `kind: "apply"`, `card_id`, `approved`, `message_id`, and the current result `fingerprint`. A changed or dirty result is refused. Repeating a start key or an apply approval for the same message, card, and fingerprint returns the existing record without another line.
 
 ## Requirements
 
