@@ -24,9 +24,11 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - `taskwatch_create` and `taskwatch_reject` create cards and reject a gate. Create and reject run under the state lock, a failed create archives the children before their parents, and a reject writes its id and the card's last event id before it reopens so a retry finishes a half-done reject. The reject cap counts finished rejects, and a new reject id is refused while another is pending. A review-gate reject reopens the fix worker only when Hermes can nest the reopen.
 - `check --apply` and the apply examples stop when the fingerprint differs. The copy example publishes only a copy it hashed itself.
 - Example skill telling a worker to run the executor in the foreground, to hand the verdict line to the review output, and to let the next card run on the approved snapshot.
+- README install, update, and removal order, and docs for every config key, every check (what it blocks and when it can be removed), and the seven principles with their sources. Document approval trust boundaries, scan read failures, and known operational limitations.
 
 ### Fixed
 
+- Clarify safe plugin updates, default-profile timer pinning, production destinations, review executor responsibility, and user escalation; consolidate operational guidance.
 - The enabled dispatch watch hook reports unreadable board evidence through the same user notification path as `scan`, without leaking the read error.
 - P0 is only a rule break about runtime behavior or data. Style and wording are P2.
 - The guideline check follows angle-bracket and reference-style local links.
