@@ -6,6 +6,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Added
 - `taskwatch_approve` records conversational start and apply approvals without hand-written JSON; retries return the existing approval and apply refuses a stale or dirty result.
+- `scan` warns through the configured user destination when the board is unreadable and exits 1; config failures exit 1 with the file and cause on stderr for the timer journal.
 - Project skeleton: documentation, CI, and issue and pull request templates.
 - Review guidelines for code, design, and source-checked documents, with a slot for project rules.
 - CI checks that review guidelines keep required sections, local references, and unique rule ids.
@@ -26,6 +27,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Fixed
 
+- The enabled dispatch watch hook reports unreadable board evidence through the same user notification path as `scan`, without leaking the read error.
 - P0 is only a rule break about runtime behavior or data. Style and wording are P2.
 - The guideline check follows angle-bracket and reference-style local links.
 - The scorer fails when an answers or mappings directory is missing or has no cases.

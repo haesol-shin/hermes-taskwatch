@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Callable, Protocol
 
 from .card_body import dumps
 from .checks import (
+    Cause,
     CheckInput,
     Decision,
     WatchTarget,
@@ -23,7 +25,7 @@ from .checks import (
 from .config import Config, config_path, load_config
 from .destinations import DestinationError, parse_destination
 from .pin import TESTED_HERMES_VERSION
-from .protocol import BoardReader
+from .protocol import BoardReader, BoardReadError
 from .state import State, Warning
 from .units import profile_home, service_text, timer_text
 
@@ -148,6 +150,17 @@ def doctor_report(root: Path, board: BoardReader, probe: Probe) -> tuple[Finding
     return tuple(findings)
 
 
+@contextmanager
+def scan_errors(config, state, now, deliver):
+    """Keep CLI and dispatch-tick failures on the same user notification path."""
+    try:
+        yield
+    except (OSError, BoardReadError) as exc:
+        line = notify_scan_failure(config, state, str(exc), now, deliver)
+        detail = f"; {line}" if line else ""
+        raise CommandError(f"cannot check board {config.board}: {exc}{detail}") from exc
+
+
 def scan_board(
     config: Config,
     board: BoardReader,
@@ -178,6 +191,10 @@ def scan_board(
             ),
             record_error=record_error or loaded.error,
         )
+        if not decision.checked and not (record_error or loaded.error):
+            unreadable = [cause for cause in decision.causes if cause.uncheckable]
+            if unreadable:
+                raise BoardReadError(unreadable[0].summary)
         lines = []
         for cause in decision.causes:
             if internal_rewarn_due(loaded.warnings, cause.cause_id, now, config):
@@ -214,6 +231,32 @@ def _notify_user(config, board, state, cause, now, deliver) -> str | None:
     if not user_notify_due(
         loaded.warnings, cause.cause_id, now, config, told, cause.summary, subscribed
     ):
+        return None
+    return _send_user(config, state, cause, now, deliver)
+
+
+def notify_scan_failure(config, state, reason, now, deliver) -> str | None:
+    """A broken board cannot carry a warning card or a main-agent subscription."""
+    cause = Cause(
+        "watch",
+        "watch:unreadable",
+        f"cannot check board: {reason}",
+        "Restore board access and run scan again",
+        False,
+        True,
+    )
+    with state.lock():
+        return _send_user(config, state, cause, now, deliver)
+
+
+def _send_user(config, state, cause, now, deliver) -> str | None:
+    # Use the same user rewarn rule even when there is no readable warning card.
+    told = [
+        item
+        for item in state.load().warnings
+        if item.cause_id == cause.cause_id and item.channel == "user"
+    ]
+    if told and max(told, key=lambda item: item.warned_at).summary == cause.summary:
         return None
     try:
         deliver(config.destinations.user_notify, format_cause(cause))

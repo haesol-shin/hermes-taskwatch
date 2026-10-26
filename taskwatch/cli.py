@@ -11,6 +11,7 @@ from .commands import (
     format_decision,
     init_layout,
     scan_board,
+    scan_errors,
     utcnow,
 )
 from .config import ConfigError, config_path, hermes_root, load_config
@@ -108,22 +109,30 @@ def _doctor(args: argparse.Namespace, deps: dict) -> tuple[str, int]:
 
 def _scan(args: argparse.Namespace, deps: dict) -> str:
     root = _root(args)
-    config = load_config(config_path(root))
+    path = config_path(root)
+    try:
+        config = load_config(path)
+    except (ConfigError, OSError) as exc:
+        reason = str(exc.__cause__ or exc).replace("\n", " ")
+        raise CommandError(f"cannot check config {path}: {reason}") from exc
     # Hermes takes `--profile` itself, so the profile is the one this process runs in.
     profile = deps.get("profile") or _current_profile()
     if profile is None:
         raise CommandError("the active Hermes profile is unknown")
     state = State(root)
-    board, writer = _board_and_writer(deps, config.board, state)
-    lines = scan_board(
-        config,
-        board,
-        state,
-        writer,
-        deps.get("now", utcnow()),
-        WatchTarget(str(root.resolve()), config.board, profile),
-        deliver=deps.get("deliver") or _live_deliver(),
-    )
+    now = deps.get("now", utcnow())
+    deliver = deps.get("deliver") or _live_deliver()
+    with scan_errors(config, state, now, deliver):
+        board, writer = _board_and_writer(deps, config.board, state)
+        lines = scan_board(
+            config,
+            board,
+            state,
+            writer,
+            now,
+            WatchTarget(str(root.resolve()), config.board, profile),
+            deliver=deliver,
+        )
     return "\n".join(lines) + ("\n" if lines else "")
 
 
