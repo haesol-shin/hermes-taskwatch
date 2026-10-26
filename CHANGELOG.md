@@ -20,6 +20,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - `scan`, `check`, the watch hook, the gate, and the card tools use the installed Hermes Kanban board.
 - A passing gate approval writes the snapshot path onto the card.
 - `taskwatch_create` and `taskwatch_reject` create cards and reject a gate. Create and reject run under the state lock, a failed create archives the children before their parents, and a reject writes its id and the card's last event id before it reopens so a retry finishes a half-done reject. The reject cap counts finished rejects, and a new reject id is refused while another is pending. A review-gate reject reopens the fix worker only when Hermes can nest the reopen.
+- `check --apply` and the apply examples stop when the fingerprint differs. The copy example publishes only a copy it hashed itself.
 
 ### Fixed
 

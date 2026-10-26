@@ -34,6 +34,7 @@ def setup_cli(parser: argparse.ArgumentParser) -> None:
     scan.add_argument("--root")
     check = subs.add_parser("check", help="Show whether a card can move on")
     check.add_argument("card")
+    check.add_argument("--apply", action="store_true")
     check.add_argument("--root")
 
 
@@ -137,9 +138,12 @@ def _check(args: argparse.Namespace, deps: dict) -> tuple[str, int]:
         state,
         args.card,
         deps.get("now", utcnow()),
+        apply=getattr(args, "apply", False),
     )
     code = 1 if decision.block or not decision.checked else 0
-
+    if getattr(args, "apply", False) and code == 0:
+        card = board.card(args.card)
+        return f"{card.fingerprint}\n", 0
     return format_decision(decision), code
 
 

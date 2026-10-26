@@ -24,6 +24,7 @@ from taskwatch.card_body import loads
 from taskwatch.commands import draft_config
 from taskwatch.config import config_path, load_config
 from taskwatch.evidence import EvidenceBoard
+from taskwatch.fingerprint import files_fingerprint
 from taskwatch.plugin import register
 from taskwatch.state import State
 
@@ -323,7 +324,14 @@ def _flow(root: Path, capsys) -> None:
         assert complete_task(conn, gate, summary="approved")
 
     assert handle_cli(parser.parse_args(["check", gate, "--root", str(root)])).startswith("pass")
+    fingerprint = files_fingerprint(work, ("out.txt",))
+    state.append_apply("merge", "msg-1", gate, fingerprint, NOW)
+    applied = handle_cli(parser.parse_args(["check", gate, "--apply", "--root", str(root)]))
+    assert applied == f"{fingerprint}\n"
     out.write_text("v3 after the approval\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as stopped:
+        handle_cli(parser.parse_args(["check", gate, "--apply", "--root", str(root)]))
+    assert stopped.value.code == 1
 
     # The next card gets its own copy made from the frozen snapshot, not the work copy that
     # changed since. The executor writes into {copy}, and that copy is what is checked.

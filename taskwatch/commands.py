@@ -231,10 +231,11 @@ def check_card(
     now: datetime,
     *,
     action: str | None = None,
+    apply: bool = False,
 ) -> Decision:
     loaded = state.load()
     card = None if loaded.error else board.card(card_id)
-    chosen = action or _movement(card)
+    chosen = "apply" if apply else (action or _movement(card))
     return gate(
         chosen,
         CheckInput(
