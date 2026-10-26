@@ -1,0 +1,17 @@
+{
+  "purpose": "unbounded wait on a contract path",
+  "rules": [
+    "K-1",
+    "C-3",
+    "C-8"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/lock.py:20-21",
+      "severity": "P0",
+      "cause": "Dropping the non-blocking flag makes a second command wait forever on a held lock instead of reporting busy with status 75, and the busy branch can no longer run."
+    }
+  ]
+}

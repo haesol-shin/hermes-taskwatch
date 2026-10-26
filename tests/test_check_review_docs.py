@@ -1,0 +1,120 @@
+import importlib.util
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "check_review_docs.py"
+
+
+def load_checker():
+    spec = importlib.util.spec_from_file_location("check_review_docs", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+CHECKER = load_checker()
+
+
+def write_valid(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    sections = CHECKER.REQUIRED_SECTIONS
+    for name, headings in sections.items():
+        lines = [f"# {name}", ""]
+        for heading in headings:
+            lines.append(f"## {heading}")
+            lines.append("")
+            lines.append("Text.")
+            lines.append("")
+        if name == "common.md":
+            lines.append("**C-1.** One rule.")
+            lines.append("")
+        if name == "README.md":
+            lines.append("See [common](common.md).")
+            lines.append("")
+        (root / name).write_text("\n".join(lines), encoding="utf-8")
+
+
+def test_repo_review_docs_pass():
+    assert CHECKER.check_review_dir(ROOT / "docs" / "review") == []
+
+
+def test_valid_fixture_passes(tmp_path: Path):
+    write_valid(tmp_path)
+    assert CHECKER.check_review_dir(tmp_path) == []
+
+
+def test_missing_section_fails(tmp_path: Path):
+    write_valid(tmp_path)
+    text = (tmp_path / "code.md").read_text(encoding="utf-8")
+    (tmp_path / "code.md").write_text(text.replace("## Quality\n", ""), encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert "code.md: missing section: Quality" in errors
+
+
+def test_missing_local_reference_fails(tmp_path: Path):
+    write_valid(tmp_path)
+    readme = tmp_path / "README.md"
+    extra = "\n[gone](missing.md)\n"
+    readme.write_text(readme.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert any("missing local reference: missing.md" in error for error in errors)
+
+
+def test_angle_bracket_local_reference_fails(tmp_path: Path):
+    write_valid(tmp_path)
+    readme = tmp_path / "README.md"
+    extra = "\n[gone](<missing.md>)\n"
+    readme.write_text(readme.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert any("missing local reference: missing.md" in error for error in errors)
+
+
+def test_reference_style_local_link_fails(tmp_path: Path):
+    write_valid(tmp_path)
+    readme = tmp_path / "README.md"
+    extra = "\n[gone][ref]\n\n[ref]: missing.md\n"
+    readme.write_text(readme.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert any("missing local reference: missing.md" in error for error in errors)
+
+
+def test_angle_bracket_and_reference_links_pass(tmp_path: Path):
+    write_valid(tmp_path)
+    readme = tmp_path / "README.md"
+    extra = (
+        "\n[common](<common.md>)\n"
+        "[web](<https://example.invalid/guide>)\n"
+        "[code][code-ref]\n"
+        "\n"
+        "[code-ref]: code.md\n"
+        "[site]: https://example.invalid/other\n"
+    )
+    readme.write_text(readme.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    assert CHECKER.check_review_dir(tmp_path) == []
+
+
+def test_http_links_are_not_local(tmp_path: Path):
+    write_valid(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n[web](https://example.invalid/guide)\n",
+        encoding="utf-8",
+    )
+    assert CHECKER.check_review_dir(tmp_path) == []
+
+
+def test_rule_id_in_two_files_fails(tmp_path: Path):
+    write_valid(tmp_path)
+    code = tmp_path / "code.md"
+    code.write_text(code.read_text(encoding="utf-8") + "\n**C-1.** Copied.\n", encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert any("C-1" in error and "appears in" in error for error in errors)
+
+
+def test_duplicate_rule_id_in_one_file_fails(tmp_path: Path):
+    write_valid(tmp_path)
+    common = tmp_path / "common.md"
+    common.write_text(common.read_text(encoding="utf-8") + "\n**C-1.** Again.\n", encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert "common.md: duplicate rule id: C-1" in errors

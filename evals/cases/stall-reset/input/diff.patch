@@ -1,0 +1,11 @@
+--- a/src/stall.py
++++ b/src/stall.py
+@@ -9,7 +9,7 @@
+         return previous, last_progress_at
+     if position > previous + ADVANCED:
+         previous = position
+-        last_progress_at = now
++    last_progress_at = now
+     return previous, last_progress_at
+ 
+ 

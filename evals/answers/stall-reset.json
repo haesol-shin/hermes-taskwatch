@@ -1,0 +1,16 @@
+{
+  "purpose": "correctness when the tests pass",
+  "rules": [
+    "K-1",
+    "K-4"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/stall.py:10-12",
+      "severity": "P1",
+      "cause": "A frozen unpaused position still refreshes the stall timer, so stall detection never fires."
+    }
+  ]
+}

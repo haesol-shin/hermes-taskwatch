@@ -1,0 +1,11 @@
+{
+  "purpose": "no blocking finding on a path the caller already blocks",
+  "rules": [
+    "K-2",
+    "K-4",
+    "K-5"
+  ],
+  "verdict": "correct",
+  "version_note": "v2: the first key expected a blocking finding for accepting a short body. Corrected because the caller rejects a short body before finish runs, so no accepted body changes.",
+  "findings": []
+}

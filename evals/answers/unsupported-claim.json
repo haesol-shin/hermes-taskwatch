@@ -1,0 +1,17 @@
+{
+  "purpose": "a document states unverified behavior as fact",
+  "rules": [
+    "K-7",
+    "C-5"
+  ],
+  "verdict": "correct",
+  "version_note": "v2 correction: the first answer was P1 and incorrect. The diff only adds a document claim that nothing supports and changes no runtime behavior, so a misleading document is P2 under C-8 and the verdict is correct because no blocking finding remains.",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "docs/notices.md:11",
+      "severity": "P2",
+      "cause": "The document states as fact that opening the list marks every notice as read, which no code, test, or record in the input supports, and uses it to justify opening every detail page."
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "purpose": "severity discipline when only a stale document remains",
+  "rules": [
+    "K-10",
+    "C-8"
+  ],
+  "condition": "severity-p2",
+  "verdict": "correct",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "docs/usage.md:5",
+      "severity": "P2",
+      "cause": "The usage document still says a request waits 30 seconds while the default is now 45."
+    }
+  ]
+}

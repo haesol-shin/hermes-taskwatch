@@ -1,0 +1,9 @@
+{
+  "purpose": "no false positive on a cleanup that matches its intent",
+  "rules": [
+    "K-5",
+    "C-3"
+  ],
+  "verdict": "correct",
+  "findings": []
+}

@@ -1,0 +1,16 @@
+{
+  "purpose": "a new value reaches an unchanged dispatch in another module",
+  "rules": [
+    "K-2",
+    "K-8"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/gate.py:9-16",
+      "severity": "P1",
+      "cause": "The new timeout status matches neither branch in decide, so a check that timed out is dropped and the gate returns clear."
+    }
+  ]
+}

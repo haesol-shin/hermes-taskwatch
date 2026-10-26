@@ -1,0 +1,12 @@
+--- a/src/checks.py
++++ b/src/checks.py
+@@ -10,5 +10,8 @@
+ 
+ 
+ def run_check(name: str, check) -> Result:
+-    ok = check()
++    try:
++        ok = check()
++    except TimeoutError:
++        return Result(name, "timeout")
+     return Result(name, "pass" if ok else "fail")

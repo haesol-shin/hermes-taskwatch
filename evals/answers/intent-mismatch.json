@@ -1,0 +1,16 @@
+{
+  "purpose": "does not do what the intent asks",
+  "rules": [
+    "C-3",
+    "C-8"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/player.py:3-16",
+      "severity": "P1",
+      "cause": "The change only raises the wait from 30 to 60 seconds and never clicks the play control, so a blocked start still times out."
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+--- a/src/downloader.py
++++ b/src/downloader.py
+@@ -26,10 +26,10 @@
+ 
+ 
+ def adopt_local(root: Path, name: str, attachment_id: str, ledger: dict[str, str]) -> bool:
+-    path = root / name
+-    if path.is_file() and path.stat().st_size > 0:
+-        ledger[attachment_id] = "done"
+-        return True
++    for path in index_files(root).get(name, []):
++        if path.stat().st_size > 0:
++            ledger[attachment_id] = "done"
++            return True
+     return False
+ 
+ 

@@ -1,0 +1,10 @@
+--- a/src/client.py
++++ b/src/client.py
+@@ -1,6 +1,6 @@
+ """HTTP client settings for https://api.example.invalid."""
+ 
+-DEFAULT_TIMEOUT_SECONDS = 30.0
++DEFAULT_TIMEOUT_SECONDS = 45.0
+ 
+ 
+ def request_timeout(override: float | None = None) -> float:

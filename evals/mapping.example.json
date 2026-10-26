@@ -1,0 +1,18 @@
+{
+  "case": "example-case",
+  "verdict": "incorrect",
+  "matches": [
+    {
+      "finding": "1",
+      "expected": "F1",
+      "severity": "P1",
+      "reason": "Same root cause and failure path, reported at the expected place."
+    }
+  ],
+  "unmatched": [
+    {
+      "finding": "2",
+      "reason": "Names a different cause, so it matches no expected finding."
+    }
+  ]
+}

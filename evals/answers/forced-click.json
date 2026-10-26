@@ -1,0 +1,23 @@
+{
+  "purpose": "every independent cause after the first",
+  "rules": [
+    "K-3",
+    "K-9",
+    "C-7"
+  ],
+  "verdict": "incorrect",
+  "findings": [
+    {
+      "id": "F1",
+      "location": "src/player.py:19",
+      "severity": "P1",
+      "cause": "The play control also pauses, so pressing it unconditionally pauses a video that already started on its own or is replaying."
+    },
+    {
+      "id": "F2",
+      "location": "src/player.py:19",
+      "severity": "P1",
+      "cause": "force=True skips the actionability checks, so after replay reloads the page the consent overlay can cover the control and the click silently misses it."
+    }
+  ]
+}
