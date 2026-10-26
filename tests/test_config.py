@@ -2,67 +2,12 @@ import json
 
 import pytest
 
-from taskwatch.config import ConfigError, config_path, hermes_root, load_config
+from taskwatch.config import ConfigError, config_path, load_config
 from tests.config_fixture import BOARD, ROOT, config_dict, write_config
 
 
-def test_profile_under_native_home_uses_native_root(monkeypatch, tmp_path):
-    native = tmp_path / "native"
-    profile = native / "profiles" / "worker"
-    profile.mkdir(parents=True)
-    monkeypatch.setattr("taskwatch.config._native_hermes_home", lambda: native)
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-
-    assert hermes_root() == native
-
-
-def test_custom_profile_home_strips_profiles_segment(monkeypatch, tmp_path):
-    native = tmp_path / "native"
-    native.mkdir()
-    custom = tmp_path / "custom-root"
-    profile = custom / "profiles" / "worker"
-    profile.mkdir(parents=True)
-    monkeypatch.setattr("taskwatch.config._native_hermes_home", lambda: native)
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-
-    assert hermes_root() == custom
-
-
-def test_custom_root_outside_native_is_itself(monkeypatch, tmp_path):
-    native = tmp_path / "native"
-    native.mkdir()
-    custom = tmp_path / "custom-root"
-    custom.mkdir()
-    monkeypatch.setattr("taskwatch.config._native_hermes_home", lambda: native)
-    monkeypatch.setenv("HERMES_HOME", str(custom))
-
-    assert hermes_root() == custom
-
-
-def test_unset_or_blank_home_uses_native(monkeypatch, tmp_path):
-    native = tmp_path / "native"
-    native.mkdir()
-    monkeypatch.setattr("taskwatch.config._native_hermes_home", lambda: native)
-    monkeypatch.delenv("HERMES_HOME", raising=False)
-    assert hermes_root() == native
-    monkeypatch.setenv("HERMES_HOME", "  ")
-    assert hermes_root() == native
-
-
-def test_home_expands_env_var(monkeypatch, tmp_path):
-    native = tmp_path / "native"
-    native.mkdir()
-    custom = tmp_path / "from-env"
-    custom.mkdir()
-    monkeypatch.setattr("taskwatch.config._native_hermes_home", lambda: native)
-    monkeypatch.setenv("TW_HOME", str(custom))
-    monkeypatch.setenv("HERMES_HOME", "$TW_HOME")
-
-    assert hermes_root() == custom
-
-
-def test_config_path_is_under_resolved_root():
-    assert config_path(hermes_root()).parts[-2:] == ("taskwatch", "config.json")
+def test_config_path_is_under_resolved_root(tmp_path):
+    assert config_path(tmp_path) == tmp_path / "taskwatch" / "config.json"
 
 
 def test_load_keeps_target_commands_and_times(tmp_path):

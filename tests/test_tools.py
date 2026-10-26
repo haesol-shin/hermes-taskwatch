@@ -18,6 +18,11 @@ from tests.threads_fixture import in_threads
 NOW = datetime(2026, 10, 26, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _root(tmp_path, monkeypatch):
+    monkeypatch.setattr("taskwatch.tools.hermes_root", lambda: tmp_path)
+
+
 def test_start_retries_return_original_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     args = {"kind": "start", "approval_key": "apr-1", "approved": "start work", "message_id": "m1"}

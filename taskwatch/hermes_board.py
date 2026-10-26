@@ -6,12 +6,7 @@ never reach these functions.
 
 from __future__ import annotations
 
-import ast
-import inspect
 import json
-import os
-import textwrap
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +35,8 @@ class UnavailableBoard:
         del card_id
         raise BoardReadError(self.reason)
 
-    def open_wait_ids(self) -> tuple[str, ...]:
+    def open_wait_ids(self, cards: tuple[Card, ...] | None = None) -> tuple[str, ...]:
+        del cards
         raise BoardReadError(self.reason)
 
     def read_error(self) -> str | None:
@@ -57,7 +53,6 @@ class HermesBoard:
     def __init__(self, slug: str | None = None, db_path: str | None = None) -> None:
         self.slug = slug
         self.db_path = db_path
-        self._owned: dict[str, str] = {}
 
     def cards(self) -> tuple[Card, ...]:
         try:
@@ -83,9 +78,10 @@ class HermesBoard:
         except Exception as exc:
             raise BoardReadError(str(exc)) from exc
 
-    def open_wait_ids(self) -> tuple[str, ...]:
+    def open_wait_ids(self, cards: tuple[Card, ...] | None = None) -> tuple[str, ...]:
         # A handled comment is not a wait. The id has to be an open card.
-        return tuple(item.id for item in self.cards() if item.status not in _CLOSED)
+        cards = self.cards() if cards is None else cards
+        return tuple(item.id for item in cards if item.status not in _CLOSED)
 
     def read_error(self) -> str | None:
         try:
@@ -112,16 +108,14 @@ class HermesBoard:
             )
 
     def create_blocked(self, title: str, body: str) -> str:
-        card_id = self.create(title, body, blocked=True)
-        self._owned[card_id] = "blocked"
-        return card_id
+        return self.create(title, body, blocked=True)
 
     def subscribe(self, card_id: str, destination: str) -> None:
         try:
             spec = parse_destination(destination)
         except DestinationError as exc:
             raise OSError(str(exc)) from exc
-        _, add_notify_sub = _notify()
+        add_notify_sub = _notify()
         with self._closing() as conn:
             add_notify_sub(
                 conn,
@@ -141,29 +135,14 @@ class HermesBoard:
     def complete(self, card_id: str, summary: str) -> bool:
         try:
             with self._closing() as conn:
-                done = bool(_kanban().complete_task(conn, card_id, summary=summary))
+                return bool(_kanban().complete_task(conn, card_id, summary=summary))
         except Exception:
             return False
-        if done:
-            self._owned[card_id] = "done"
-        return done
 
     def archive(self, card_id: str) -> None:
         with self._closing() as conn:
             if not _kanban().archive_task(conn, card_id):
                 raise OSError(f"could not archive {card_id}")
-        self._owned.pop(card_id, None)
-
-    def statuses(self) -> dict[str, str]:
-        if not self._owned:
-            return {}
-        found = {}
-        with self._closing() as conn:
-            kb = _kanban()
-            for card_id, status in self._owned.items():
-                task = kb.get_task(conn, card_id)
-                found[card_id] = task.status if task is not None else status
-        return found
 
     def unblock(self, card_id: str) -> None:
         with self._closing() as conn:
@@ -211,37 +190,6 @@ class HermesBoard:
                 kb.add_comment(conn, card_id, "taskwatch", text)
             if not kb.reopen_review_task(conn, card_id):
                 raise OSError(f"could not reopen {card_id}")
-
-    def reject_review(self, card_id: str, text: str) -> None:
-        """Reopen the finished fix worker and everything behind it in one transaction.
-
-        Only a Hermes whose reopen_review_task nests inside a transaction can do this.
-        The caller checked that. Separate transactions would leave the old result done
-        and let the reviewer run on it.
-        """
-        kb = _kanban()
-        write_txn = _write_txn()
-        terminations = []
-        with self._closing() as conn:
-            fixers = [
-                pid for pid in kb.parent_ids(conn, card_id) if _status(kb, conn, pid) == "done"
-            ]
-            if not fixers:
-                raise OSError(f"{card_id} has no finished fix worker to reopen")
-            with write_txn(conn):
-                for target in (card_id, *fixers):
-                    kb.add_comment(conn, target, "taskwatch", text)
-                if not kb.reopen_review_task(conn, card_id):
-                    raise OSError(f"could not reopen {card_id}")
-                for fixer in fixers:
-                    _reopen_done(kb, conn, fixer)
-                    result = kb.invalidate_descendants_for_parent_reopen(
-                        conn, fixer, author="taskwatch"
-                    )
-                    terminations.extend(result["terminations"])
-        # Hermes kills a running descendant's worker only after the transaction committed.
-        for pid, claim_lock, started_at in terminations:
-            kb._terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
 
     def record_snapshot(self, card_id: str, path: str) -> None:
         kb = _kanban()
@@ -297,7 +245,6 @@ class HermesBoard:
         if conn is None:
             with self._closing() as owned:
                 return self._subscription_strings(card_id, owned)
-        _, _add = _notify()
         list_notify_subs = _list_notify_subs()
         found = []
         for item in list_notify_subs(conn, card_id):
@@ -319,33 +266,11 @@ def open_board(slug: str | None = None, db_path: str | None = None):
 def live_probe(root: Path):
     from .commands import Probe
 
-    return Probe(_hermes_version(), nested_reopen_available(), _enabled(root))
+    return Probe(_hermes_version(), _enabled(root))
 
 
 def _enabled(root: Path):
     return lambda profile: _plugin_enabled(root, profile)
-
-
-def nested_reopen_available() -> bool | None:
-    """True when installed reopen_review_task calls write_txn(allow_nested=True)."""
-    try:
-        fn = getattr(_kanban(), "reopen_review_task", None)
-        if fn is None:
-            return None
-        source = textwrap.dedent(inspect.getsource(fn))
-        tree = ast.parse(source)
-    except Exception:
-        return None
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _call_name(node) != "write_txn":
-            continue
-        for keyword in node.keywords:
-            if keyword.arg != "allow_nested":
-                continue
-            value = keyword.value
-            if isinstance(value, ast.Constant) and value.value is True:
-                return True
-    return False
 
 
 def deliver_user(destination: str, text: str) -> None:
@@ -374,18 +299,27 @@ def deliver_user(destination: str, text: str) -> None:
         raise OSError(str(detail or "send was not confirmed"))
 
 
-def db_path(slug: str | None, *, honor_env: bool) -> str:
-    """Path Hermes would open. The configured board ignores a worker pin."""
+def hermes_root() -> Path:
+    # The shared root has no public API; get_hermes_home() is the active profile home.
+    from hermes_constants import get_default_hermes_root
+
+    return Path(get_default_hermes_root())
+
+
+def db_path(slug: str | None) -> str:
+    """Path the next Hermes call opens: a pinned HERMES_KANBAN_DB wins over the name."""
     from hermes_cli.kanban_db import kanban_db_path
 
-    if honor_env:
-        return str(kanban_db_path(slug))
-    saved = os.environ.pop("HERMES_KANBAN_DB", None)
-    try:
-        return str(kanban_db_path(slug))
-    finally:
-        if saved is not None:
-            os.environ["HERMES_KANBAN_DB"] = saved
+    return str(kanban_db_path(slug))
+
+
+def configured_db_path(slug: str) -> str:
+    """Path of the configured board's file, ignoring a pin. Same layout as kanban_db_path."""
+    from hermes_cli.kanban_db import board_dir, kanban_home
+
+    slug = slug.strip().lower()
+    base = kanban_home() if slug == "default" else board_dir(slug)
+    return str(base / "kanban.db")
 
 
 def _kanban():
@@ -400,16 +334,10 @@ def _connect_closing():
     return connect_closing
 
 
-def _write_txn():
-    from hermes_cli.kanban_db_connect import write_txn
-
-    return write_txn
-
-
 def _notify():
     from hermes_cli.kanban_db_notify import add_notify_sub
 
-    return None, add_notify_sub
+    return add_notify_sub
 
 
 def _list_notify_subs():
@@ -455,48 +383,6 @@ def _plugin_enabled(root: Path, profile: str) -> bool | None:
     return bool(names & set(enabled))
 
 
-def _plugin_profile() -> str | None:
-    from .plugin import plugin_profile
-
-    return plugin_profile()
-
-
-def _active_profile() -> str | None:
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-    except Exception:
-        return None
-    try:
-        return get_active_profile_name()
-    except Exception:
-        return None
-
-
-def _status(kb, conn, card_id: str) -> str | None:
-    task = kb.get_task(conn, card_id)
-    return task.status if task is not None else None
-
-
-def _reopen_done(kb, conn, card_id: str) -> None:
-    """done -> ready, or todo while a parent is still open. Hermes has no function for this;
-    its dashboard writes the same row and event. Call it inside the caller's transaction."""
-    parents = [_status(kb, conn, parent) for parent in kb.parent_ids(conn, card_id)]
-    landing = "ready" if all(item in _CLOSED for item in parents) else "todo"
-    cur = conn.execute(
-        "UPDATE tasks SET status = ?, completed_at = NULL, current_run_id = NULL, "
-        "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-        "WHERE id = ? AND status = 'done'",
-        (landing, card_id),
-    )
-    if cur.rowcount != 1:
-        raise OSError(f"could not reopen {card_id}")
-    conn.execute(
-        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-        "VALUES (?, NULL, 'status', ?, ?)",
-        (card_id, json.dumps({"status": landing, "reason": "taskwatch reject"}), int(time.time())),
-    )
-
-
 def _at(epoch: int) -> datetime:
     return datetime.fromtimestamp(int(epoch), timezone.utc)
 
@@ -522,12 +408,3 @@ def _optional_int(value: object) -> int | None:
 def _int(value: object, default: int) -> int:
     parsed = _optional_int(value)
     return default if parsed is None else parsed
-
-
-def _call_name(node: ast.Call) -> str:
-    func = node.func
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return ""

@@ -80,9 +80,6 @@ class Board:
     def reject_worker(self, card_id, text):
         self._reopen("worker", card_id, text)
 
-    def reject_review(self, card_id, text):
-        self._reopen("review", card_id, text)
-
 
 def _ready(tmp_path):
     root = tmp_path / "hermes"
@@ -118,7 +115,7 @@ def _create(tmp_path, board, cards=({"title": "work", "gate": True},), state=Non
     )
 
 
-def _reject(config, state, board, reject_id="r1", card_id="g1", nested=False, at=NOW):
+def _reject(config, state, board, reject_id="r1", card_id="g1", at=NOW):
     return reject_gate(
         config,
         state,
@@ -127,7 +124,6 @@ def _reject(config, state, board, reject_id="r1", card_id="g1", nested=False, at
         reason="fix it",
         reject_id=reject_id,
         now=at,
-        nested_reopen=nested,
     )
 
 
@@ -419,7 +415,7 @@ def test_two_callers_rejecting_with_different_ids_open_one_round(tmp_path):
     assert len(board.calls) == 1
 
 
-def test_review_gate_reject_without_nested_reopen_does_not_mutate(tmp_path):
+def test_review_gate_reject_is_refused_and_does_not_mutate(tmp_path):
     config, state, _, _ = _ready(tmp_path)
     board = Board()
     board.cards["g1"] = _gate("review")
@@ -430,13 +426,32 @@ def test_review_gate_reject_without_nested_reopen_does_not_mutate(tmp_path):
     assert state.read_records("rejects.jsonl") == ()
 
 
-def test_review_gate_reject_with_nested_reopen_uses_the_review_path(tmp_path):
+@pytest.mark.parametrize("phase", ["done", "started"])
+def test_review_gate_reject_refuses_historical_records_without_mutation(tmp_path, phase):
     config, state, _, _ = _ready(tmp_path)
     board = Board()
     board.cards["g1"] = _gate("review")
-    result = _reject(config, state, board, nested=True)
-    assert result["ok"] is True
-    assert [call[0] for call in board.calls] == ["review"]
+    state.append_record(
+        "rejects.jsonl",
+        {
+            "card_id": "g1",
+            "reject_id": "historical",
+            "phase": phase,
+            "round": 1,
+            "event_mark": 0,
+            "result": {"ok": True, "opened": True, "round": 1, "reject_id": "historical"},
+        },
+        NOW,
+    )
+    before = state.read_records("rejects.jsonl")
+    card_before = dict(board.cards["g1"])
+    for reject_id in ("historical", "new"):
+        result = _reject(config, state, board, reject_id)
+        assert result == {"ok": False, "error": "core update needed", "opened": False}
+    assert board.cards["g1"] == card_before
+    assert board.calls == []
+    assert board.reopened == []
+    assert state.read_records("rejects.jsonl") == before
 
 
 def test_a_card_that_is_not_a_gate_or_not_waiting_is_not_rejected(tmp_path):

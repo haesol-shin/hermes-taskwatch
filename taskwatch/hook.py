@@ -10,8 +10,9 @@ from pathlib import Path
 
 from .checks import WatchTarget
 from .commands import CommandError, WarningWriter, scan_board, scan_errors, utcnow
-from .config import ConfigError, config_path, hermes_root, load_config
+from .config import ConfigError, config_path, load_config
 from .evidence import EvidenceBoard
+from .hermes_board import hermes_root
 from .protocol import BoardReader
 from .state import State
 

@@ -18,9 +18,9 @@ Supported: Linux with systemd, Python 3.11 or later, no runtime dependencies. ma
 
 Supported Hermes: 0.21.5, the version the plugin was tested against. `hermes taskwatch doctor` fails on an older Hermes and only warns on a newer one.
 
-For the review-gate reject requirement, see [Known limitations](#known-limitations).
+Rejecting a review-gate card is not supported, see [Known limitations](#known-limitations).
 
-Do the steps in this order. Stop at the first failure, except for the specific `doctor` result allowed in step 3.
+Do the steps in this order. Stop at the first failure.
 
 1. Use the `default` main profile and install the plugin there and in every worker profile that will run cards. Each profile keeps its own plugin list. First follow the [profile setup](docs/configuration.md#profile-setup) precondition.
 
@@ -37,7 +37,7 @@ Do the steps in this order. Stop at the first failure, except for the specific `
    hermes taskwatch init --hermes "$(command -v hermes)" --board <board>
    ```
 
-   Follow [profile setup](docs/configuration.md#profile-setup) to edit the draft and pin the service before starting it. Every key is in [docs/configuration.md](docs/configuration.md).
+   Follow [profile setup](docs/configuration.md#profile-setup) to edit the draft before starting it. The generated service pins the first configured profile. Every key is in [docs/configuration.md](docs/configuration.md).
 
 3. Check the setup.
 
@@ -45,7 +45,7 @@ Do the steps in this order. Stop at the first failure, except for the specific `
    hermes taskwatch doctor
    ```
 
-   It checks the config, the board, the destinations, write access to the state directory, the Hermes version, the reject capability, and that the plugin is enabled in each listed profile. On Hermes 0.21.5 it exits non-zero for the `reject` line alone. You may continue with only that failure if your workflow does not need review-gate rejection. Otherwise update Hermes first. Every other line must be `ok`, except `hermes: warn` on a Hermes newer than 0.21.5, which is informational.
+   It checks the config, the board, the destinations, write access to the state directory, the Hermes version and that the plugin is enabled in each listed profile. Every line must be `ok`, except `hermes: warn` on a Hermes newer than 0.21.5, which is informational.
 
 4. Scan a test board once. Point `board` at a board you can throw away and the destinations at a test target first, because a scan writes warning cards and may send a line to `user_notify`.
 
@@ -98,7 +98,7 @@ The main agent uses `taskwatch_approve` for [approval records](docs/configuratio
 ## Known limitations
 
 - A retried delivery of the same wake makes the main agent write one judgment comment per delivery. There is no comment deduplication layer. The reject itself stays idempotent when the same stable `reject_id` is reused.
-- Hermes 0.21.5 cannot reopen a review-kind gate inside the reject transaction. `taskwatch_reject` refuses with `core update needed` and changes nothing; `doctor` reports `reject: fail` and exits 1. Review-gate rejection needs a Hermes update with nested reopen support. Work-gate rejection does not need it.
+- Rejecting a review-kind gate card is not supported, because Hermes has no public atomic reopen. `taskwatch_reject` refuses with `core update needed` and changes nothing. Work-gate rejection is supported.
 - Hermes consumes taskwatch's `--profile` option as its global profile selector. See [profile setup](docs/configuration.md#profile-setup) for the workaround and timer pinning.
 - After a plugin hook timeout, Hermes temporarily suppresses the same callback. The `pre_tool_call` guard fails closed during suppression, so even `kanban_block` is refused. A card can stay running until the worker exits and the dispatcher reclaims its dead claim.
 - Only a scripted model was used to exercise agent behavior. Behavior with a real model has not been tested.

@@ -24,13 +24,13 @@ Initialize without taskwatch's `--profile` option: Hermes consumes both `--profi
 
 The draft has `profiles: ["default"]`. Both destination strings initially contain the same placeholder spec (`platform: "placeholder"`, `chat_id: "chat.invalid"`, `thread_id: "0"`, `chat_type: "dm"`, `profile: "default"`, `delivery_mode: "wake"`). Replace the destinations and executor commands before use.
 
-The generated service sets `HERMES_HOME` but does not pin the default profile: Hermes can still follow `active_profile`. To keep the timer on `default` after active-profile changes, edit `~/.config/systemd/user/hermes-taskwatch-scan.service`, replacing its `ExecStart` with the following line using the absolute executable path supplied to `init`:
+The generated service sets `HERMES_HOME` and pins `profiles[0]` with `-p`, so the timer does not follow `active_profile`. With the draft configuration, its command uses the absolute executable path supplied to `init`:
 
 ```ini
 ExecStart=<hermes> -p default taskwatch scan
 ```
 
-Run `systemctl --user daemon-reload` before starting the timer. Reapply this edit if the unit is regenerated.
+`init` reloads the user units. After changing `profiles[0]`, edit the existing service's `HERMES_HOME` and `ExecStart -p` together to match the new profile, then run `systemctl --user daemon-reload`.
 
 ## `destinations`
 

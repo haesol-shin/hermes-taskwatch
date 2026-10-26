@@ -52,6 +52,8 @@ def test_register_accepts_a_context_without_hermes():
     seen = {}
 
     class Ctx:
+        profile_name = "main"
+
         def register_cli_command(self, **kwargs):
             seen.update(kwargs)
 

@@ -22,7 +22,7 @@ class FakeBoard:
             raise BoardReadError("board read failed")
         return next((item for item in self.items if item.id == card_id), None)
 
-    def open_wait_ids(self) -> tuple[str, ...]:
+    def open_wait_ids(self, cards=None) -> tuple[str, ...]:
         return self.waits
 
     def read_error(self) -> str | None:

@@ -37,6 +37,8 @@ A review run writes one record per round. The reviewer's output file must hold e
 
 The record names the fingerprint of the result and the basis it was reviewed against. For a Git result the fingerprint is the commit SHA, and a work copy with uncommitted changes is refused. For any other result it is the hash of the sorted list of path and SHA-256 pairs of the named result files, so an addition, a deletion, or a rename changes it. The basis is the same kind of hash over the intent file, the spec file, and the review guideline files.
 
+`taskwatch_reject` does not support a review card, because Hermes has no public atomic reopen. It refuses and changes nothing.
+
 Only the latest round for the same fingerprint and basis counts. An earlier PASS cannot outvote a later FAIL, and a PASS that carries a blocking finding is not a pass. A changed result, intent, or spec makes every earlier PASS stop counting.
 
 ## Watch checks

@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from taskwatch.checks import (
-    REGISTRY,
     Cause,
     CheckInput,
     WatchTarget,
@@ -100,15 +99,6 @@ def _ids(decision) -> set[str]:
 def test_board_reader_has_no_write_methods():
     names = {name for name in vars(BoardReader) if not name.startswith("_")}
     assert names == {"card", "cards", "open_wait_ids", "read_error"}
-
-
-def test_registry_records_what_each_check_blocks():
-    assert REGISTRY
-    blocks = [spec.blocks for spec in REGISTRY.values()]
-    removable = [spec.removable_when for spec in REGISTRY.values()]
-    assert len(blocks) == len(set(blocks))
-    assert len(removable) == len(set(removable))
-    assert all(item and "\n" not in item for item in blocks + removable)
 
 
 def test_cause_body_has_one_next_line_and_a_certainty_mark():
@@ -394,6 +384,46 @@ def test_wait_is_valid_only_while_the_reason_is_open(tmp_path):
     assert "gate_action" not in _ids(watch(_input(config, FakeBoard((blocked,)))))
 
 
+class _Counting(FakeBoard):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reads = {"cards": 0, "card": 0, "waits": []}
+
+    def cards(self):
+        self.reads["cards"] += 1
+        return super().cards()
+
+    def card(self, card_id):
+        self.reads["card"] += 1
+        return super().card(card_id)
+
+    def open_wait_ids(self, cards=None):
+        self.reads["waits"].append(cards)
+        return super().open_wait_ids(cards)
+
+
+def test_one_watch_reads_the_cards_once_and_shares_them_with_the_wait_lookup(tmp_path):
+    config = _config(tmp_path)
+    event = _event("ev-1", "review_requested", NOW - HOUR)
+    comment = Comment("handled event=ev-1 action=wait:line-1", NOW - timedelta(minutes=5))
+    card = _card(status="review", gate=True, events=(event,), comments=(comment,))
+    board = _Counting((card,), waits=("line-1",))
+    assert "gate_action" not in _ids(watch(_input(config, board)))
+    assert board.reads["cards"] == 1
+    assert board.reads["waits"] == [(card,)]
+    watch(_input(config, board))
+    assert board.reads["cards"] == 2
+
+
+def test_a_failed_card_read_is_not_kept_as_an_empty_result(tmp_path):
+    config = _config(tmp_path)
+    board = _Counting((_card(),), boom=True)
+    first = watch(_input(config, board))
+    assert first.causes[0].uncheckable
+    board.boom = False
+    assert board.cards() == board.items
+
+
 def test_reject_followup_deadline_running_and_new_review(tmp_path):
     config = _config(tmp_path)
     reopen = _event("re-1", "review_reopened", NOW - timedelta(hours=2))
@@ -636,7 +666,7 @@ def test_read_error_failure_is_a_decision(tmp_path):
         def card(self, _card_id):
             return None
 
-        def open_wait_ids(self):
+        def open_wait_ids(self, cards=None):
             return ()
 
     config = _config(tmp_path)

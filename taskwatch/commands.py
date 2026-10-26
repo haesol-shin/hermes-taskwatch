@@ -50,8 +50,6 @@ class WarningWriter(Protocol):
 
     def archive(self, card_id: str) -> None: ...
 
-    def statuses(self) -> dict[str, str]: ...
-
 
 @dataclass(frozen=True, slots=True)
 class Finding:
@@ -64,7 +62,6 @@ class Finding:
 @dataclass(frozen=True, slots=True)
 class Probe:
     hermes_version: str | None
-    nested_reopen: bool | None
     plugin_enabled: Callable[[str], bool | None]
 
 
@@ -132,7 +129,7 @@ def init_layout(
     load_config(path)
     home = profile_home(str(root.resolve()), profiles[0])
     unit_dir.mkdir(parents=True, exist_ok=True)
-    (unit_dir / SERVICE).write_text(service_text(hermes_exe, home), encoding="utf-8")
+    (unit_dir / SERVICE).write_text(service_text(hermes_exe, home, profiles[0]), encoding="utf-8")
     (unit_dir / TIMER).write_text(timer_text(), encoding="utf-8")
     runner(["systemctl", "--user", "daemon-reload"])
     return path
@@ -145,7 +142,6 @@ def doctor_report(root: Path, board: BoardReader, probe: Probe) -> tuple[Finding
     findings.append(_destination_finding(config))
     findings.append(_write_finding(root))
     findings.append(_version_finding(probe.hermes_version))
-    findings.append(_reject_finding(probe.nested_reopen))
     findings.extend(_plugin_findings(config, probe.plugin_enabled))
     return tuple(findings)
 
@@ -286,6 +282,8 @@ def check_card(
             config=config,
             board=board,
             card_id=card_id,
+            card=card,
+            card_loaded=not loaded.error,
             approvals=loaded.approvals,
             reviews=loaded.reviews,
             warnings=loaded.warnings,
@@ -380,14 +378,6 @@ def _version_tuple(version: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in parts)
 
 
-def _reject_finding(available: bool | None) -> Finding:
-    if available is None:
-        return Finding("reject", False, "capability unreadable")
-    if not available:
-        return Finding("reject", False, "core update needed")
-    return Finding("reject", True, "nested reopen")
-
-
 def _plugin_findings(
     config: Config | None, enabled: Callable[[str], bool | None]
 ) -> tuple[Finding, ...]:
@@ -409,9 +399,10 @@ def _write_warning(
     config: Config, writer: WarningWriter, cause, now: datetime, state: State
 ) -> bool:
     body = dumps({"warning_for": cause.cause_id}, format_cause(cause))
-    before = set(writer.statuses())
+    created: list[str] = []
     try:
         card_id = writer.create_blocked(cause.cause_id, body)
+        created.append(card_id)
         writer.subscribe(card_id, config.destinations.main_subscription)
         if not writer.subscribed(card_id, config.destinations.main_subscription):
             writer.archive(card_id)
@@ -420,7 +411,7 @@ def _write_warning(
             writer.archive(card_id)
             return False
     except OSError:
-        for card_id in set(writer.statuses()) - before:
+        for card_id in created:
             writer.archive(card_id)
         return False
     state.append_warning(Warning(1, cause.cause_id, now, "internal", cause.summary))

@@ -12,3 +12,4 @@ provides_hooks:
 provides_tools:
   - taskwatch_create
   - taskwatch_reject
+  - taskwatch_approve

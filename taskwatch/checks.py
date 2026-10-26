@@ -6,7 +6,7 @@ cause, not an empty result.
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -69,14 +69,16 @@ class CheckInput:
     reviews: tuple[Review, ...] = ()
     warnings: tuple[Warning, ...] = ()
     target: WatchTarget | None = None
+    # Reads made once for this evaluation and reused by the checks. Never kept across scans.
+    cards: tuple[Card, ...] | None = None
+    card: Card | None = None
+    card_loaded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class CheckSpec:
     name: str
     kind: str
-    blocks: str
-    removable_when: str
     run: Callable[[CheckInput], tuple[Cause, ...]]
 
 
@@ -90,7 +92,7 @@ def watch(inp: CheckInput, *, record_error: str | None = None) -> Decision:
         error = record_error or inp.board.read_error()
         if error:
             return _uncheckable_decision("watch", error, block=False)
-        causes = _run_kind(inp, "watch")
+        causes = _run_kind(replace(inp, cards=inp.board.cards()), "watch")
     except (OSError, BoardReadError) as exc:
         return _uncheckable_decision("watch", str(exc), block=False)
     return Decision(True, False, causes)
@@ -114,6 +116,8 @@ def gate(
             return _uncheckable_decision("gate", error, block=True)
         if action not in GATE_ACTIONS:
             return _uncheckable_decision("gate", "unknown action", block=True)
+        if inp.card_id and not inp.card_loaded:
+            inp = replace(inp, card=inp.board.card(inp.card_id), card_loaded=True)
         causes: list[Cause] = []
         for name in GATE_ACTIONS[action]:
             causes.extend(REGISTRY[name].run(inp))
@@ -165,10 +169,6 @@ def received_at(comments: Sequence[Comment], rules: CommentRules, cause_id: str)
     expected = f"{rules.received_prefix}{cause_id}"
     times = [item.at for item in comments if item.text.strip() == expected]
     return min(times) if times else None
-
-
-def _register(spec: CheckSpec) -> None:
-    REGISTRY[spec.name] = spec
 
 
 def _run_kind(inp: CheckInput, kind: str) -> tuple[Cause, ...]:
@@ -242,10 +242,13 @@ def _need(inp: CheckInput) -> Card | Cause:
             certain=False,
             uncheckable=True,
         )
-    try:
-        card = inp.board.card(inp.card_id)
-    except (OSError, BoardReadError) as exc:
-        raise BoardReadError(str(exc)) from exc
+    if inp.card_loaded:
+        card = inp.card
+    else:
+        try:
+            card = inp.board.card(inp.card_id)
+        except (OSError, BoardReadError) as exc:
+            raise BoardReadError(str(exc)) from exc
     if card is None:
         return _cause(
             "gate",
@@ -259,10 +262,14 @@ def _need(inp: CheckInput) -> Card | Cause:
 
 
 def _cards(inp: CheckInput) -> tuple[Card, ...]:
-    if inp.board.read_error():
-        raise BoardReadError(inp.board.read_error())
+    cards = inp.cards
+    if cards is None:
+        error = inp.board.read_error()
+        if error:
+            raise BoardReadError(error)
+        cards = inp.board.cards()
     # A warning card is taskwatch's own output. It is not work to check.
-    return tuple(card for card in inp.board.cards() if card.warning_for is None)
+    return tuple(card for card in cards if card.warning_for is None)
 
 
 def worker_finish(inp: CheckInput) -> tuple[Cause, ...]:
@@ -670,7 +677,7 @@ def _wait_still_valid(card: Card, event_id: str, inp: CheckInput) -> bool:
         return False
     if card.status == "blocked":
         return True
-    open_ids = set(inp.board.open_wait_ids())
+    open_ids = set(inp.board.open_wait_ids(inp.cards))
     return any(item.argument in open_ids for item in waits)
 
 
@@ -873,119 +880,23 @@ def _warnings(warnings: Sequence[Warning], cause_id: str, channel: str) -> tuple
     return tuple(sorted(found, key=lambda item: item.warned_at))
 
 
-def _spec(name: str, kind: str, blocks: str, removable_when: str, run) -> None:
-    _register(CheckSpec(name, kind, blocks, removable_when, run))
+def _register(name: str, kind: str, run: Callable[[CheckInput], tuple[Cause, ...]]) -> None:
+    REGISTRY[name] = CheckSpec(name, kind, run)
 
 
-_spec(
-    "worker_finish",
-    "gate",
-    "completing without a zero exit, required outputs, and a passing checklist",
-    "Hermes refuses those calls on the same evidence",
-    worker_finish,
-)
-_spec(
-    "pass_review",
-    "gate",
-    "approving a result with no PASS for the current fingerprint and basis",
-    "Hermes stores the reviewed fingerprint and refuses a mismatch",
-    pass_review,
-)
-_spec(
-    "clean_result",
-    "gate",
-    "approving or applying a work copy that changed after the PASS",
-    "Hermes rejects a dirty work copy on gate pass and apply",
-    clean_result,
-)
-_spec(
-    "apply_match",
-    "gate",
-    "applying a result other than the approved fingerprint",
-    "the apply command compares the approved fingerprint itself",
-    apply_match,
-)
-_spec(
-    "gate_action",
-    "watch",
-    "a gate card with no real action after its latest review request",
-    "Hermes records that action gap itself",
-    gate_action,
-)
-_spec(
-    "reject_followup",
-    "watch",
-    "a started reject that never reaches a new review request",
-    "Hermes tracks reject completion itself",
-    reject_followup,
-)
-_spec(
-    "next_not_started",
-    "watch",
-    "a recorded next card that does not start",
-    "Hermes starts that next card itself",
-    next_not_started,
-)
-_spec(
-    "intermediate_failure",
-    "watch",
-    "an intermediate card left in a failure status",
-    "Hermes wakes the main agent for those statuses",
-    intermediate_failure,
-)
-_spec(
-    "unstarted_after_parents",
-    "watch",
-    "a card whose parents are done but which never starts",
-    "Hermes promotes a ready child and alerts",
-    unstarted_after_parents,
-)
-_spec(
-    "start_without_card",
-    "watch",
-    "a start approval that never becomes a linked card",
-    "card creation is transactional with the approval record",
-    start_without_card,
-)
-_spec(
-    "gate_subscription",
-    "watch",
-    "a gate card with no main subscription",
-    "Hermes refuses to drop that subscription",
-    gate_subscription,
-)
-_spec(
-    "checklist_done",
-    "watch",
-    "a done card whose checklist has a failing item",
-    "Hermes refuses done unless the checklist passes",
-    checklist_done,
-)
-_spec(
-    "reject_cap",
-    "watch",
-    "another automatic reject after the cap",
-    "Hermes enforces the reject cap",
-    reject_cap,
-)
-_spec(
-    "stalled",
-    "watch",
-    "a running card whose progress and outputs are unchanged",
-    "Hermes reports that card-level stall",
-    stalled,
-)
-_spec(
-    "unchecked_result",
-    "watch",
-    "a done result with no PASS for its fingerprint and basis",
-    "the gate blocks done without that PASS",
-    unchecked_result,
-)
-_spec(
-    "applied_differs",
-    "watch",
-    "an applied fingerprint that is not in the approval record",
-    "apply refuses a fingerprint mismatch before it writes",
-    applied_differs,
-)
+_register("worker_finish", "gate", worker_finish)
+_register("pass_review", "gate", pass_review)
+_register("clean_result", "gate", clean_result)
+_register("apply_match", "gate", apply_match)
+_register("gate_action", "watch", gate_action)
+_register("reject_followup", "watch", reject_followup)
+_register("next_not_started", "watch", next_not_started)
+_register("intermediate_failure", "watch", intermediate_failure)
+_register("unstarted_after_parents", "watch", unstarted_after_parents)
+_register("start_without_card", "watch", start_without_card)
+_register("gate_subscription", "watch", gate_subscription)
+_register("checklist_done", "watch", checklist_done)
+_register("reject_cap", "watch", reject_cap)
+_register("stalled", "watch", stalled)
+_register("unchecked_result", "watch", unchecked_result)
+_register("applied_differs", "watch", applied_differs)

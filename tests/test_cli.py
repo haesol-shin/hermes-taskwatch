@@ -51,9 +51,6 @@ class Writer:
     def archive(self, card_id: str) -> None:
         self.cards[card_id]["status"] = "archived"
 
-    def statuses(self) -> dict[str, str]:
-        return {card_id: item["status"] for card_id, item in self.cards.items()}
-
 
 def _spec() -> str:
     return json.dumps(
@@ -98,7 +95,7 @@ def test_init_writes_a_timer_argument_list_and_refuses_a_second_write(tmp_path):
         runner=calls.append,
     )
     service = (units / "hermes-taskwatch-scan.service").read_text(encoding="utf-8")
-    assert f"ExecStart={HERMES} taskwatch scan\n" in service
+    assert f"ExecStart={HERMES} -p main taskwatch scan\n" in service
     assert "sh -c" not in service
     assert calls == [["systemctl", "--user", "daemon-reload"]]
     assert "enable" not in calls[0]
@@ -117,7 +114,7 @@ def test_init_writes_a_timer_argument_list_and_refuses_a_second_write(tmp_path):
 def test_doctor_fails_when_a_listed_profile_has_the_plugin_off(tmp_path):
     root = tmp_path / "hermes"
     _write_ready(root)
-    probe = Probe("0.21.5", True, lambda profile: profile != "worker")
+    probe = Probe("0.21.5", lambda profile: profile != "worker")
     with pytest.raises(SystemExit) as caught:
         handle_cli(
             _parser().parse_args(["doctor", "--root", str(root)]),
@@ -129,7 +126,7 @@ def test_doctor_fails_when_a_listed_profile_has_the_plugin_off(tmp_path):
 def test_doctor_fails_on_a_version_mismatch(tmp_path):
     root = tmp_path / "hermes"
     _write_ready(root)
-    probe = Probe("0.20.1", True, lambda profile: True)
+    probe = Probe("0.20.1", lambda profile: True)
     with pytest.raises(SystemExit) as caught:
         handle_cli(
             _parser().parse_args(["doctor", "--root", str(root)]),
@@ -141,14 +138,14 @@ def test_doctor_fails_on_a_version_mismatch(tmp_path):
 def test_doctor_warns_above_the_tested_version_and_does_not_fail(tmp_path):
     root = tmp_path / "hermes"
     _write_ready(root)
-    probe = Probe("0.22.0", True, lambda profile: True)
+    probe = Probe("0.22.0", lambda profile: True)
     text = handle_cli(
         _parser().parse_args(["doctor", "--root", str(root)]),
         {"board": FakeBoard(), "probe": probe},
     )
     assert "hermes: warn" in text
     assert "0.22.0" in text
-    later = Probe("0.21.10", True, lambda profile: True)
+    later = Probe("0.21.10", lambda profile: True)
     text = handle_cli(
         _parser().parse_args(["doctor", "--root", str(root)]),
         {"board": FakeBoard(), "probe": later},
@@ -168,7 +165,7 @@ def test_doctor_and_scan_open_the_live_board_when_none_is_injected(tmp_path, mon
 
     def fake_probe(path):
         seen["probe"] = path
-        return Probe("0.21.5", True, lambda profile: True)
+        return Probe("0.21.5", lambda profile: True)
 
     monkeypatch.setattr("taskwatch.hermes_board.open_board", fake_board)
     monkeypatch.setattr("taskwatch.hermes_board.live_probe", fake_probe)
@@ -180,9 +177,6 @@ def test_doctor_and_scan_open_the_live_board_when_none_is_injected(tmp_path, mon
 
 
 class _Live(FakeBoard):
-    def statuses(self):
-        return {}
-
     def create_blocked(self, title, body):
         raise AssertionError(body or title)
 
@@ -220,7 +214,7 @@ def test_scan_does_not_write_a_second_warning_before_the_backoff(tmp_path):
     scan_board(
         config, board, State(root), writer, NOW + timedelta(seconds=1), target, deliver=_refuse
     )
-    assert list(writer.statuses()) == ["w1"]
+    assert list(writer.cards) == ["w1"]
     assert board.card("c1").status == "blocked"
 
 
@@ -239,23 +233,31 @@ def test_scan_archives_a_warning_when_the_subscription_is_missing(tmp_path):
         WatchTarget(str(root), config.board, "main"),
         deliver=_refuse,
     )
-    assert writer.statuses()["w1"] == "archived"
+    assert writer.cards["w1"]["status"] == "archived"
     assert State(root).load().warnings == ()
 
 
-def test_check_is_read_only_and_blocks_a_failing_checklist(tmp_path):
+def test_check_is_read_only_and_blocks_a_failing_checklist(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
     _write_ready(root)
     checklist = tmp_path / "check.json"
     checklist.write_text('{"items":[{"id":"a","passes":false}]}', encoding="utf-8")
     card = Card(id="c1", status="running", exit_code=0, checklist_path=str(checklist))
     board = FakeBoard((card,))
+    reads = []
+
+    def read(card_id):
+        reads.append(card_id)
+        return card
+
+    monkeypatch.setattr(board, "card", read)
     with pytest.raises(SystemExit) as caught:
         handle_cli(
             _parser().parse_args(["check", "c1", "--root", str(root)]),
             {"board": board, "now": NOW},
         )
     assert caught.value.code == 1
+    assert reads == ["c1"]
     assert board.card("c1").status == "running"
 
 
@@ -286,7 +288,7 @@ class _Linked:
     def card(self, card_id: str) -> Card | None:
         return next((item for item in self.cards() if item.id == card_id), None)
 
-    def open_wait_ids(self) -> tuple[str, ...]:
+    def open_wait_ids(self, cards=None) -> tuple[str, ...]:
         return ()
 
     def read_error(self) -> str | None:
@@ -426,7 +428,7 @@ def test_deleted_warning_subscription_is_sent_to_the_user_at_once(tmp_path):
 def test_doctor_reports_an_unreadable_config_instead_of_crashing(tmp_path):
     root = tmp_path / "hermes"
     root.mkdir()
-    probe = Probe("0.21.5", True, lambda profile: True)
+    probe = Probe("0.21.5", lambda profile: True)
     with pytest.raises(SystemExit) as caught:
         handle_cli(
             _parser().parse_args(["doctor", "--root", str(root)]),

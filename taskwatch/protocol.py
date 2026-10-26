@@ -67,8 +67,11 @@ class BoardReader(Protocol):
     def card(self, card_id: str) -> Card | None:
         """Return one card, or None if it is not on the board."""
 
-    def open_wait_ids(self) -> tuple[str, ...]:
-        """Return wait ids that are still open. A comment alone is not enough."""
+    def open_wait_ids(self, cards: tuple[Card, ...] | None = None) -> tuple[str, ...]:
+        """Return wait ids that are still open. A comment alone is not enough.
+
+        ``cards`` is a read the caller already made. None means read the board.
+        """
 
     def read_error(self) -> str | None:
         """Return why the board cannot be read, or None when the read succeeded."""

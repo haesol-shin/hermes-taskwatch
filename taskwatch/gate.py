@@ -13,7 +13,7 @@ from typing import Callable
 from .checks import CheckInput, Decision, WatchTarget, format_cause, gate
 from .commands import utcnow
 from .config import Config, ConfigError, load_config
-from .protocol import BoardReader
+from .protocol import BoardReader, BoardReadError
 from .state import State
 
 _TOOLS = {"kanban_complete": "complete", "kanban_request_review": "request_review"}
@@ -47,7 +47,12 @@ def decide(
     if not card_id or db_path is None:
         return _block("unresolved target")
     loaded = state.load()
-    card = None if loaded.error else board.card(card_id)
+    card = None
+    if not loaded.error:
+        try:
+            card = board.card(card_id)
+        except (OSError, BoardReadError) as exc:
+            return _block(str(exc))
     action = _action(tool_name, card)
     decision = gate(
         action,
@@ -56,6 +61,8 @@ def decide(
             config=config,
             board=board,
             card_id=card_id,
+            card=card,
+            card_loaded=not loaded.error,
             approvals=loaded.approvals,
             reviews=loaded.reviews,
             warnings=loaded.warnings,
@@ -125,27 +132,25 @@ def pre_tool_call(tool_name: str, args: dict | None = None, task_id: str = "", *
 
 def gate_context(args: dict | None, kwargs: dict) -> dict:
     """Fill the gate from the installed Hermes when the caller did not inject a board."""
-    from .config import config_path, hermes_root
+    from .config import config_path
     from .evidence import EvidenceBoard
     from .fingerprint import freeze
-    from .hermes_board import db_path, open_board
+    from .hermes_board import configured_db_path, db_path, hermes_root, open_board
     from .state import State
 
     root = kwargs.get("root") or hermes_root()
     config, error = load_gate_config(config_path(root))
     profile = kwargs.get("profile_name")
-    if profile is None:
-        from .hermes_board import _active_profile, _plugin_profile
-
-        profile = _plugin_profile() or _active_profile()
+    if profile is None and "ctx" in kwargs:
+        profile = getattr(kwargs["ctx"], "profile_name", None)
     if "env_task" in kwargs:
         env_task = kwargs.get("env_task")
     else:
         env_task = os.environ.get("HERMES_KANBAN_TASK")
     board_arg = args.get("board") if isinstance(args, dict) else None
     # The database this call really opens. A name in the arguments does not pick another one.
-    seen = db_path(board_arg, honor_env=True)
-    configured = None if config is None else db_path(config.board, honor_env=False)
+    seen = db_path(board_arg)
+    configured = None if config is None else configured_db_path(config.board)
     raw = open_board(db_path=seen)
     state = State(root)
     reader = EvidenceBoard(raw, state)

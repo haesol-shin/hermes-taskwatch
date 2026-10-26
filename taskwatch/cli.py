@@ -14,8 +14,9 @@ from .commands import (
     scan_errors,
     utcnow,
 )
-from .config import ConfigError, config_path, hermes_root, load_config
+from .config import ConfigError, config_path, load_config
 from .evidence import EvidenceBoard
+from .hermes_board import hermes_root
 from .protocol import BoardReadError
 from .state import State
 from .units import UnitError
@@ -115,8 +116,7 @@ def _scan(args: argparse.Namespace, deps: dict) -> str:
     except (ConfigError, OSError) as exc:
         reason = str(exc.__cause__ or exc).replace("\n", " ")
         raise CommandError(f"cannot check config {path}: {reason}") from exc
-    # Hermes takes `--profile` itself, so the profile is the one this process runs in.
-    profile = deps.get("profile") or _current_profile()
+    profile = deps.get("profile")
     if profile is None:
         raise CommandError("the active Hermes profile is unknown")
     state = State(root)
@@ -181,12 +181,6 @@ def _evidence_board(slug: str, state: State):
     # The board reads the same State the command holds. A second State would wait on
     # the first one's file lock forever.
     return EvidenceBoard(_open_board(slug), state)
-
-
-def _current_profile() -> str | None:
-    from .hermes_board import _active_profile, _plugin_profile
-
-    return _plugin_profile() or _active_profile()
 
 
 def _live_deliver():
