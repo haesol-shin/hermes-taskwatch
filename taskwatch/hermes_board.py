@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -177,32 +178,70 @@ class HermesBoard:
         return None
 
     def gate_role(self, card_id: str) -> str:
+        """The gate's role comes from its kind, which creation wrote. Its status says nothing."""
+        with self._closing() as conn:
+            task = _kanban().get_task(conn, card_id)
+        fields = loads(task.body) if task is not None else {}
+        if not fields.get("gate"):
+            return "unknown"
+        return "review" if fields.get("kind") == "review" else "worker"
+
+    def waiting(self, card_id: str) -> bool:
+        with self._closing() as conn:
+            task = _kanban().get_task(conn, card_id)
+        return task is not None and task.status == "review"
+
+    def event_mark(self, card_id: str) -> int:
+        """The id of the card's newest event, or 0. A reject records it when it starts."""
+        with self._closing() as conn:
+            events = _kanban().list_events(conn, card_id)
+        return max((item.id for item in events), default=0)
+
+    def reopened_after(self, card_id: str, mark: int) -> bool:
+        """True when the card was reopened from review by an event newer than ``mark``."""
+        with self._closing() as conn:
+            events = _kanban().list_events(conn, card_id)
+        return any(item.kind == "review_reopened" and item.id > mark for item in events)
+
+    def reject_worker(self, card_id: str, text: str) -> None:
+        """Comment, then send the worker back. The comment names the reject, so a retry skips it."""
         kb = _kanban()
         with self._closing() as conn:
-            task = kb.get_task(conn, card_id)
-            if task is None:
-                return "unknown"
-            if task.status == "running" and _claimed_from_review(kb, conn, card_id):
-                return "review"
-            if task.status == "review":
-                return "worker"
-        return "unknown"
-
-    def comment(self, card_id: str, reason: str) -> None:
-        with self._closing() as conn:
-            _kanban().add_comment(conn, card_id, "taskwatch", reason)
-
-    def reopen_worker(self, card_id: str) -> None:
-        with self._closing() as conn:
-            if not _kanban().reopen_review_task(conn, card_id):
+            if not any(item.body == text for item in kb.list_comments(conn, card_id)):
+                kb.add_comment(conn, card_id, "taskwatch", text)
+            if not kb.reopen_review_task(conn, card_id):
                 raise OSError(f"could not reopen {card_id}")
 
-    def reject_review(self, card_id: str, reason: str) -> None:
-        # The nested composite is not a separate function in the tested Hermes.
-        # When the installed reopen accepts a nested transaction, this is the
-        # call the review gate is allowed to make.
-        self.comment(card_id, reason)
-        self.reopen_worker(card_id)
+    def reject_review(self, card_id: str, text: str) -> None:
+        """Reopen the finished fix worker and everything behind it in one transaction.
+
+        Only a Hermes whose reopen_review_task nests inside a transaction can do this.
+        The caller checked that. Separate transactions would leave the old result done
+        and let the reviewer run on it.
+        """
+        kb = _kanban()
+        write_txn = _write_txn()
+        terminations = []
+        with self._closing() as conn:
+            fixers = [
+                pid for pid in kb.parent_ids(conn, card_id) if _status(kb, conn, pid) == "done"
+            ]
+            if not fixers:
+                raise OSError(f"{card_id} has no finished fix worker to reopen")
+            with write_txn(conn):
+                for target in (card_id, *fixers):
+                    kb.add_comment(conn, target, "taskwatch", text)
+                if not kb.reopen_review_task(conn, card_id):
+                    raise OSError(f"could not reopen {card_id}")
+                for fixer in fixers:
+                    _reopen_done(kb, conn, fixer)
+                    result = kb.invalidate_descendants_for_parent_reopen(
+                        conn, fixer, author="taskwatch"
+                    )
+                    terminations.extend(result["terminations"])
+        # Hermes kills a running descendant's worker only after the transaction committed.
+        for pid, claim_lock, started_at in terminations:
+            kb._terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
 
     def record_snapshot(self, card_id: str, path: str) -> None:
         kb = _kanban()
@@ -361,6 +400,12 @@ def _connect_closing():
     return connect_closing
 
 
+def _write_txn():
+    from hermes_cli.kanban_db_connect import write_txn
+
+    return write_txn
+
+
 def _notify():
     from hermes_cli.kanban_db_notify import add_notify_sub
 
@@ -427,12 +472,29 @@ def _active_profile() -> str | None:
         return None
 
 
-def _claimed_from_review(kb, conn, card_id: str) -> bool:
-    claimed = [item for item in kb.list_events(conn, card_id) if item.kind == "claimed"]
-    if not claimed:
-        return False
-    payload = max(claimed, key=lambda item: item.id).payload or {}
-    return payload.get("source_status") == "review"
+def _status(kb, conn, card_id: str) -> str | None:
+    task = kb.get_task(conn, card_id)
+    return task.status if task is not None else None
+
+
+def _reopen_done(kb, conn, card_id: str) -> None:
+    """done -> ready, or todo while a parent is still open. Hermes has no function for this;
+    its dashboard writes the same row and event. Call it inside the caller's transaction."""
+    parents = [_status(kb, conn, parent) for parent in kb.parent_ids(conn, card_id)]
+    landing = "ready" if all(item in _CLOSED for item in parents) else "todo"
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, completed_at = NULL, current_run_id = NULL, "
+        "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+        "WHERE id = ? AND status = 'done'",
+        (landing, card_id),
+    )
+    if cur.rowcount != 1:
+        raise OSError(f"could not reopen {card_id}")
+    conn.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, NULL, 'status', ?, ?)",
+        (card_id, json.dumps({"status": landing, "reason": "taskwatch reject"}), int(time.time())),
+    )
 
 
 def _at(epoch: int) -> datetime:

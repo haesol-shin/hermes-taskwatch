@@ -9,3 +9,6 @@ platforms:
 provides_hooks:
   - on_kanban_dispatch_tick
   - pre_tool_call
+provides_tools:
+  - taskwatch_create
+  - taskwatch_reject

@@ -58,7 +58,11 @@ def test_register_accepts_a_context_without_hermes():
         def register_hook(self, name, callback):
             seen.setdefault("hooks", []).append(name)
 
+        def register_tool(self, **kwargs):
+            seen.setdefault("tools", []).append(kwargs["name"])
+
     register(Ctx())
     assert seen["name"] == "taskwatch"
     assert seen["hooks"] == ["on_kanban_dispatch_tick", "pre_tool_call"]
+    assert seen["tools"] == ["taskwatch_create", "taskwatch_reject"]
     assert seen["setup_fn"].__name__ == "setup_cli"
