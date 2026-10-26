@@ -147,7 +147,9 @@ class State:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             handle.close()
 
-    def append_start(self, approval_key: str, approved_at: datetime, approved: str) -> None:
+    def append_start(
+        self, approval_key: str, approved_at: datetime, approved: str, message_id: str | None = None
+    ) -> None:
         _check_id(approval_key, "approval_key")
         _check_text(approved, "approved")
         payload = {
@@ -157,6 +159,8 @@ class State:
             "approved_at": _stamp(approved_at),
             "approved": approved,
         }
+        if message_id is not None:
+            payload["message_id"] = _check_id(message_id, "message_id")
         with self.lock():
             records = _read_approvals(self.approvals_path)
             if any(item.kind == "start" and item.approval_key == approval_key for item in records):
@@ -479,13 +483,14 @@ def _approval(obj: dict, where: str) -> Approval:
 
 
 def _start(obj: dict, where: str) -> Approval:
-    _exact(obj, _START_KEYS, where)
+    _exact(obj, _START_KEYS | ({"message_id"} if "message_id" in obj else set()), where)
     return Approval(
         version=RECORD_VERSION,
         kind="start",
         approval_key=_record_id(obj["approval_key"], where),
         approved_at=_parse_time(obj["approved_at"], where),
         approved=_text(obj["approved"], where),
+        message_id=_record_id(obj["message_id"], where) if "message_id" in obj else None,
     )
 
 

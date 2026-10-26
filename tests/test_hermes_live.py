@@ -567,3 +567,123 @@ def _scan_flow(root: Path, capsys) -> None:
     assert scan() == ""
     # Only the one cause was ever warned about: the warning cards are not checked as work.
     assert set(warnings()) == {f"{blocked}:blocked"}
+
+
+def test_live_conversational_approvals(monkeypatch):
+    from taskwatch.evidence import Run, append_run
+    from taskwatch.hermes_board import open_board
+    from taskwatch.tools import taskwatch_approve, taskwatch_create
+
+    root = _tmp_root("tw-approve-")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    try:
+        config = _start(root)
+        start = {
+            "kind": "start",
+            "approval_key": "apr-tool",
+            "approved": "start the work",
+            "message_id": "msg-start",
+        }
+        first = json.loads(taskwatch_approve(start))
+        assert first["ok"] is True
+        assert json.loads(taskwatch_approve(start)) == first
+        intent, spec = root / "intent.md", root / "spec.md"
+        _write(intent, "## Source\nuser\n## Purpose\nwhy\n## Done\nresult\n## Approval\napr-tool\n")
+        _write(
+            spec,
+            "## Outputs\nresult.txt\n## Checklist\nlist.json\n## Out of scope\nnone\n"
+            "## Live\nfixture.invalid\n## Guidance\nnone\n## Model\nexample\n",
+        )
+        created = json.loads(
+            taskwatch_create(
+                {
+                    "approval_key": "apr-tool",
+                    "intent": str(intent),
+                    "spec": str(spec),
+                    "cards": [{"title": "approved work"}],
+                }
+            )
+        )
+        assert created["ok"] is True
+        card_id = created["card_id"]
+        assert _task(card_id).status == "ready"
+        work = root / "work"
+        _write(work / "result.txt", "approved result\n")
+        fingerprint = files_fingerprint(work, ("result.txt",))
+        state = State(root)
+        append_run(state, Run("run-1", card_id, "work", 0, str(work), False, ("result.txt",)), NOW)
+        apply = {
+            "kind": "apply",
+            "card_id": card_id,
+            "approved": "publish the result",
+            "message_id": "msg-apply",
+            "fingerprint": fingerprint,
+        }
+        approved = json.loads(taskwatch_approve(apply))
+        assert approved["ok"] is True
+        assert approved["approval"]["approved"] == apply["approved"]
+        assert state.load().approvals[-1].approved == apply["approved"]
+        assert json.loads(taskwatch_approve(apply)) == approved
+        assert [item.kind for item in state.load().approvals] == ["start", "link", "apply"]
+        assert (
+            EvidenceBoard(open_board(config.board), state).card(card_id).fingerprint == fingerprint
+        )
+        _write(work / "result.txt", "changed result\n")
+        assert json.loads(taskwatch_approve(apply))["ok"] is False
+        assert [item.kind for item in state.load().approvals] == ["start", "link", "apply"]
+    finally:
+        shutil.rmtree(root)
+
+
+def test_live_scan_unreadable_board(monkeypatch, capsys):
+    from hermes_cli.kanban_db import kanban_db_path
+
+    from taskwatch.cli import handle_cli
+
+    root = _tmp_root("tw-unreadable-")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    try:
+        _start(root)
+        # Break only the disposable board. The real send path uses the local test platform.
+        kanban_db_path("twaccept").write_bytes(b"not a sqlite database")
+        for _ in range(2):
+            with pytest.raises(SystemExit) as caught:
+                handle_cli(_parser().parse_args(["scan", "--root", str(root)]))
+            assert caught.value.code == 1
+        assert len(SENT) == 1
+        assert SENT[0][0] == "chat1"
+        assert "cannot check board" in SENT[0][1]
+        assert "cannot check board" in capsys.readouterr().err
+        assert [item.channel for item in State(root).load().warnings] == ["user"]
+    finally:
+        shutil.rmtree(root)
+
+
+def test_live_dispatch_tick_unreadable_runs(monkeypatch):
+    from taskwatch.hook import dispatch_tick
+
+    root = _tmp_root("tw-hook-unreadable-")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    try:
+        config = _start(root)
+        raw = json.loads(config_path(root).read_text())
+        raw["watch_hook"] = True
+        _write(config_path(root), json.dumps(raw))
+        state = State(root)
+        _write(state.dir / "runs.jsonl", "{broken}\n")
+        delivered = []
+        lines = dispatch_tick(
+            board=config.board,
+            profile_name="main",
+            root=root,
+            now=NOW,
+            deliver=lambda destination, text: delivered.append((destination, text)),
+        )
+        assert len(delivered) == 1
+        assert delivered[0][0] == config.destinations.user_notify
+        assert "runs.jsonl:1" in delivered[0][1]
+        assert "watch:unreadable" in delivered[0][1]
+        assert "cannot check board" in lines[0]
+        assert [item.channel for item in state.load().warnings] == ["user"]
+    finally:
+        shutil.rmtree(root)

@@ -10,7 +10,7 @@ from taskwatch.card_body import loads
 from taskwatch.checks import WatchTarget
 from taskwatch.cli import handle_cli, setup_cli
 from taskwatch.commands import CommandError, Probe, init_layout, scan_board
-from taskwatch.config import config_path, load_config
+from taskwatch.config import ConfigError, config_path, load_config
 from taskwatch.protocol import Card, Comment
 from taskwatch.state import State
 from tests.config_fixture import config_dict
@@ -433,3 +433,86 @@ def test_doctor_reports_an_unreadable_config_instead_of_crashing(tmp_path):
             {"board": FakeBoard(), "probe": probe},
         )
     assert caught.value.code == 1
+
+
+@pytest.mark.parametrize("contents", [None, b"\xff", b"{broken", b"{}"])
+def test_scan_config_failure_names_file_and_cause(tmp_path, capsys, contents):
+    root = tmp_path / "hermes"
+    path = config_path(root)
+    if contents is not None:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(contents)
+    with pytest.raises(SystemExit) as caught:
+        handle_cli(
+            _parser().parse_args(["scan", "--root", str(root)]),
+            {"deliver": _refuse},
+        )
+    assert caught.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 1
+    assert str(path) in captured.err
+    with pytest.raises(ConfigError) as error:
+        load_config(path)
+    reason = str(error.value.__cause__ or error.value).replace("\n", " ")
+    assert captured.err.endswith(f": {reason}\n")
+
+
+@pytest.mark.parametrize("failure", ["reported", "raised", "open"])
+def test_scan_unreadable_board_notifies_once_across_scans(tmp_path, monkeypatch, capsys, failure):
+    root = tmp_path / "hermes"
+    _write_ready(root)
+    sent = []
+    board = FakeBoard(error="board offline") if failure == "reported" else FakeBoard(boom=True)
+    writer = Writer()
+    deps = {
+        "board": board,
+        "writer": writer,
+        "profile": "main",
+        "now": NOW,
+        "deliver": lambda destination, text: sent.append((destination, text)),
+    }
+    if failure == "open":
+
+        def down(slug):
+            raise OSError("cannot open board")
+
+        monkeypatch.setattr("taskwatch.cli._open_board", down)
+        deps.pop("board")
+        deps.pop("writer")
+    for _ in range(2):
+        with pytest.raises(SystemExit) as caught:
+            handle_cli(_parser().parse_args(["scan", "--root", str(root)]), deps)
+        assert caught.value.code == 1
+    assert sent[0][0] == load_config(config_path(root)).destinations.user_notify
+    assert "cannot check board" in sent[0][1]
+    assert "next:" in sent[0][1]
+    assert len(sent) == 1
+    assert writer.cards == {}
+    assert [item.channel for item in State(root).load().warnings] == ["user"]
+    assert "cannot check board" in capsys.readouterr().err
+
+
+def test_scan_failed_delivery_retries_and_changed_cause_notifies(tmp_path):
+    root = tmp_path / "hermes"
+    _write_ready(root)
+    board = FakeBoard(error="board offline")
+    deps = {"board": board, "writer": Writer(), "profile": "main", "now": NOW}
+    args = _parser().parse_args(["scan", "--root", str(root)])
+
+    def down(destination, text):
+        raise OSError("platform offline")
+
+    with pytest.raises(SystemExit):
+        handle_cli(args, {**deps, "deliver": down})
+    assert State(root).load().warnings == ()
+    sent = []
+    deps["deliver"] = lambda destination, text: sent.append(text)
+    with pytest.raises(SystemExit):
+        handle_cli(args, deps)
+    board.error = "board permissions changed"
+    deps["now"] = NOW + timedelta(seconds=1)
+    with pytest.raises(SystemExit):
+        handle_cli(args, deps)
+    assert len(sent) == 2
+    assert "board permissions changed" in sent[1]

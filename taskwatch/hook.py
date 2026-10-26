@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .checks import WatchTarget
-from .commands import WarningWriter, scan_board, utcnow
+from .commands import CommandError, WarningWriter, scan_board, scan_errors, utcnow
 from .config import ConfigError, config_path, hermes_root, load_config
 from .evidence import EvidenceBoard
 from .protocol import BoardReader
@@ -39,7 +39,12 @@ def on_dispatch_tick(
     # An omitted board cannot be confirmed. Empty is not the configured board.
     seen = board_name if board_name else ""
     target = WatchTarget(str(root.resolve()), seen, profile_name)
-    return scan_board(config, reader, state or State(root), writer, now, target, deliver=deliver)
+    state = state or State(root)
+    try:
+        with scan_errors(config, state, now, deliver):
+            return scan_board(config, reader, state, writer, now, target, deliver=deliver)
+    except CommandError as exc:
+        return (str(exc),)
 
 
 def dispatch_tick(
