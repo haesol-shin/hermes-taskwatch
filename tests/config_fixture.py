@@ -43,6 +43,7 @@ def config_dict() -> dict:
             "wait_prefix": "wait:",
             "next_prefix": "next:",
         },
+        "watch_hook": False,
     }
 
 

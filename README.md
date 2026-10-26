@@ -4,7 +4,7 @@
 
 hermes-taskwatch is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) Kanban. It is meant to watch delegated work, block unchecked results from moving on, and wake the main agent or you only when a decision is needed.
 
-> Status: experimental. Nothing below is implemented yet. This README describes the planned v0.1 behavior. There is no release yet.
+> Status: experimental. The plugin entry and `hermes taskwatch` commands are in the tree. A real install is not the acceptance test.
 
 ## What it is not
 

@@ -23,6 +23,7 @@ _TOP_KEYS = frozenset(
         "times",
         "limits",
         "comments",
+        "watch_hook",
     }
 )
 _DESTINATION_KEYS = frozenset({"main_subscription", "user_notify"})
@@ -109,6 +110,7 @@ class Config:
     times: Times
     limits: Limits
     comments: CommentRules
+    watch_hook: bool
 
 
 def _native_hermes_home() -> Path:
@@ -171,6 +173,7 @@ def load_config(path: Path) -> Config:
         times=_times(raw["times"]),
         limits=_limits(raw["limits"]),
         comments=_comments(raw["comments"]),
+        watch_hook=_bool(raw["watch_hook"], "watch_hook"),
     )
 
 
@@ -205,6 +208,12 @@ def _absolute(value: object, key: str) -> str:
 def _positive_int(value: object, key: str, *, minimum: int = 1) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ConfigError(f"{key} must be an integer >= {minimum}")
+    return value
+
+
+def _bool(value: object, key: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be a boolean")
     return value
 
 

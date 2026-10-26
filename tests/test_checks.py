@@ -652,3 +652,43 @@ def test_read_error_failure_is_a_decision(tmp_path):
     )
     assert blocked.block
     assert blocked.causes[0].uncheckable
+
+
+def test_warning_cards_are_not_work_to_check(tmp_path):
+    config = _config(tmp_path)
+    warning = _card("warn-1", status="done", warning_for="card-1:blocked")
+    watched = watch(_input(config, FakeBoard((warning,))))
+    assert watched.causes == ()
+
+
+def test_deleted_warning_subscription_makes_the_user_notice_due(tmp_path):
+    config = _config(tmp_path)
+    cause = "card-1:ev-1"
+    history = (Warning(RECORD_VERSION, cause, NOW, "internal", "no action"),)
+
+    def due(subscribed, at=NOW + timedelta(seconds=1), received=None):
+        return user_notify_due(history, cause, at, config, received, "no action", subscribed)
+
+    assert not due(True)
+    assert due(False)
+    assert due(False, received=NOW)
+
+
+def test_a_later_fail_or_a_blocking_pass_is_not_a_pass(tmp_path):
+    config = _config(tmp_path)
+    card = _ready(tmp_path, gate=True, status="review")
+
+    def reviews(*items):
+        board = FakeBoard((card,))
+        inp = _input(config, board, card_id=card.id, reviews=items)
+        return gate("approve", inp, profile_in_list=True, board_matches=True)
+
+    def review(round_, verdict="PASS", blocking=False):
+        return Review(
+            RECORD_VERSION, round_, card.id, "fp-1", "basis-1", "r.invalid", verdict, blocking
+        )
+
+    assert not reviews(review(1)).block
+    assert reviews(review(1), review(2, "FAIL", True)).block
+    assert reviews(review(1, "PASS", True)).block
+    assert not reviews(review(1, "FAIL", True), review(2)).block
