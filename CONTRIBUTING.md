@@ -62,9 +62,8 @@ The pull request body is the evidence for merging this change now: tests run, CI
 - Add one line under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) when the change is visible to users.
 - Do not commit secrets, personal values, or local paths. Use placeholders in examples.
 - Merging:
-  - A pull request with one commit is squash merged. The squash body follows the commit rules above.
-  - A pull request that groups several steps is merged with a merge commit. Each step is one commit that follows the rules above. Fold review fixes into the commit they belong to before merging. The merge commit has only a title, `type(scope): pull request title (#number)`, and no body.
-  - `git log --first-parent` shows one line per pull request.
+  - Every pull request is squash merged, so `main` has one commit per pull request. Write the squash subject as the pull request title plus `(#number)` and the body by the commit rules above, replacing GitHub's commit list. Merge commits and rebase merging are off: a pull request is one change, and its step commits stay on the pull request page.
+  - Split a large change into pull requests that can each be reviewed and merged on their own ([Google, Small CLs](https://google.github.io/eng-practices/review/developer/small-cls.html)).
   - Merge only after the maintainer approves the current head, and pin it: `gh pr merge <number> --match-head-commit <approved SHA>`. A new commit after approval needs a new approval.
 
 ## Using AI tools
