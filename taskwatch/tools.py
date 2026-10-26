@@ -7,8 +7,9 @@ from pathlib import Path
 
 from .cards import create_cards, reject_gate
 from .checks import CheckInput, apply_match, clean_result
-from .config import config_path, hermes_root, load_config
+from .config import config_path, load_config
 from .evidence import EvidenceBoard
+from .hermes_board import hermes_root
 from .protocol import BoardReadError
 from .state import Approval, RecordError, State, StateError
 
@@ -28,7 +29,7 @@ CREATE_SCHEMA = {
 }
 REJECT_SCHEMA = {
     "name": "taskwatch_reject",
-    "description": "Reject a gate. A review gate needs nested reopen in Hermes.",
+    "description": "Reject a gate. A review gate is not supported.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -137,8 +138,8 @@ def _approve_locked(args, state, writer):
     return {"ok": True, "approval": payload}
 
 
-def taskwatch_create(args, writer=None, nested_reopen=None, **kwargs):
-    del nested_reopen, kwargs
+def taskwatch_create(args, writer=None, **kwargs):
+    del kwargs
     writer = _writer(writer)
     if writer is None:
         return json.dumps({"ok": False, "error": "board adapter missing"})
@@ -157,15 +158,11 @@ def taskwatch_create(args, writer=None, nested_reopen=None, **kwargs):
     return json.dumps(result)
 
 
-def taskwatch_reject(args, writer=None, nested_reopen=None, **kwargs):
+def taskwatch_reject(args, writer=None, **kwargs):
     del kwargs
     writer = _writer(writer)
     if writer is None:
         return json.dumps({"ok": False, "error": "board adapter missing"})
-    if nested_reopen is None:
-        from .hermes_board import nested_reopen_available
-
-        nested_reopen = nested_reopen_available() is True
     root = hermes_root()
     config = load_config(config_path(root))
     result = reject_gate(
@@ -176,7 +173,6 @@ def taskwatch_reject(args, writer=None, nested_reopen=None, **kwargs):
         reason=args["reason"],
         reject_id=args["reject_id"],
         now=datetime.now(timezone.utc),
-        nested_reopen=nested_reopen,
     )
     return json.dumps(result)
 

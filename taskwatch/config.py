@@ -5,8 +5,6 @@ default would hide a file that points at the wrong target.
 """
 
 import json
-import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,37 +109,6 @@ class Config:
     limits: Limits
     comments: CommentRules
     watch_hook: bool
-
-
-def _native_hermes_home() -> Path:
-    if sys.platform == "win32":
-        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "hermes"
-    return Path.home() / ".hermes"
-
-
-def _expand_hermes_home(path: str) -> Path:
-    return Path(os.path.expanduser(os.path.expandvars(path)))
-
-
-def hermes_root() -> Path:
-    """Root Hermes dir, including when HERMES_HOME is ``<root>/profiles/<name>``.
-
-    Reimplemented from Hermes ``get_default_hermes_root`` (hermes_constants.py
-    lines 217-234). The memo is omitted so a changed HERMES_HOME is visible.
-    Do not import Hermes.
-    """
-    native_home = _native_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "").strip()
-    env_path = _expand_hermes_home(env_home) if env_home else None
-    result = native_home
-    if env_path is not None:
-        try:
-            env_path.resolve().relative_to(native_home.resolve())
-        except ValueError:
-            result = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    return result
 
 
 def config_path(root: Path) -> Path:

@@ -10,6 +10,7 @@ root=$2
 card=$3
 pr=$4
 method=$5
+: "${HERMES_PROFILE:?Set HERMES_PROFILE to the execution profile}"
 case $method in
   squash|merge|rebase) ;;
   *)
@@ -17,5 +18,5 @@ case $method in
     exit 2
     ;;
 esac
-sha=$("$hermes" taskwatch check "$card" --apply --root "$root")
+sha=$("$hermes" -p "$HERMES_PROFILE" taskwatch check "$card" --apply --root "$root")
 exec gh pr merge "$pr" "--$method" --match-head-commit "$sha"

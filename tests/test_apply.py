@@ -115,6 +115,7 @@ def test_merge_script_does_not_call_gh_when_the_check_fails(tmp_path):
     env = os.environ.copy()
     env["PATH"] = f"{tmp_path}:{env['PATH']}"
     env["GH_LOG"] = str(tmp_path / "gh.log")
+    env["HERMES_PROFILE"] = "main"
     completed = subprocess.run(
         [
             str(ROOT / "examples/apply/merge_pr.sh"),
@@ -141,6 +142,7 @@ def test_merge_script_pins_the_checked_commit_and_requires_a_method(tmp_path):
     env = os.environ.copy()
     env["PATH"] = f"{tmp_path}:{env['PATH']}"
     env["GH_LOG"] = str(tmp_path / "gh.log")
+    env["HERMES_PROFILE"] = "main"
     script = str(ROOT / "examples/apply/merge_pr.sh")
     missing = subprocess.run([script, str(hermes), "/placeholder/root", "c1", "1"], check=False)
     assert missing.returncode == 2

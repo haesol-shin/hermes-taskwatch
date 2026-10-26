@@ -1,7 +1,7 @@
 """Create a card from intent and spec, or reject a gate.
 
-taskwatch does not start the next chain. A review-gate reject needs a Hermes
-that can nest reopen_review_task. Without that, the reject is refused.
+taskwatch does not start the next chain. A review-gate reject is refused: Hermes has no
+public atomic reopen for a review card.
 
 Both tools change the board and the state files in several steps, so each runs
 under the state lock from the first lookup to the last write.
@@ -90,7 +90,6 @@ def reject_gate(
     reason: str,
     reject_id: str,
     now: datetime,
-    nested_reopen: bool,
 ) -> dict:
     """Open one more round on a gate card, once per reject id.
 
@@ -103,6 +102,9 @@ def reject_gate(
     if not reason.strip() or not reject_id.strip():
         return {"ok": False, "error": "reason and reject id are required"}
     with state.lock():
+        if writer.gate_role(card_id) == "review":
+            # Hermes has no public atomic reopen for a review card.
+            return {"ok": False, "error": "core update needed", "opened": False}
         try:
             records = state.read_records(REJECTS)
         except (RecordError, OSError) as exc:
@@ -116,7 +118,7 @@ def reject_gate(
         pending = _pending(records, card_id)
         if pending and pending != reject_id:
             return {"ok": False, "error": "another reject is pending", "pending": pending}
-        refused = _refusal(writer, card_id, nested_reopen, started=bool(mine))
+        refused = _refusal(writer, card_id, started=bool(mine))
         if refused:
             return refused
         if mine:
@@ -146,13 +148,11 @@ def _pending(records: tuple[dict, ...], card_id: str) -> str | None:
     return None
 
 
-def _refusal(writer, card_id: str, nested_reopen: bool, *, started: bool) -> dict | None:
+def _refusal(writer, card_id: str, *, started: bool) -> dict | None:
     role = writer.gate_role(card_id)
-    waiting = writer.waiting(card_id)
     if role == "unknown":
         return {"ok": False, "error": "unknown gate role", "opened": False}
-    if role == "review" and waiting and not nested_reopen:
-        return {"ok": False, "error": "core update needed", "opened": False}
+    waiting = writer.waiting(card_id)
     if not waiting and not started:
         return {"ok": False, "error": "card is not waiting for a decision", "opened": False}
     return None
@@ -165,10 +165,7 @@ def _open(state, writer, card_id, reject_id, reason, round_, mark, now) -> dict:
         # "done". The card can be waiting again by now, so the board's own reopen event
         # after the mark decides, not the status.
         if writer.waiting(card_id) and not writer.reopened_after(card_id, mark):
-            if writer.gate_role(card_id) == "review":
-                writer.reject_review(card_id, text)
-            else:
-                writer.reject_worker(card_id, text)
+            writer.reject_worker(card_id, text)
     except OSError as exc:
         return {"ok": False, "error": str(exc), "opened": False, "retry": True}
     result = {"ok": True, "opened": True, "round": round_, "reject_id": reject_id}

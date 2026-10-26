@@ -157,7 +157,6 @@ def test_dispatch_tick_checks_the_live_result_not_the_card_body(tmp_path, monkey
         subscribed = writer.subscribed
         complete = writer.complete
         archive = writer.archive
-        statuses = writer.statuses
 
     monkeypatch.setattr("taskwatch.hermes_board.open_board", lambda slug=None, db_path=None: Live)
     dispatch_tick(

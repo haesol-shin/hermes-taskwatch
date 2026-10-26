@@ -7,7 +7,6 @@ snapshot. Nothing here edits a card body to make a check pass.
 
 import argparse
 import importlib.util
-import inspect
 import json
 import os
 import shutil
@@ -45,13 +44,92 @@ class _Ctx:
     profile_name = "main"
 
     def register_cli_command(self, **kwargs):
-        del kwargs
+        type(self).cli = staticmethod(kwargs["handler_fn"])
 
     def register_hook(self, name, callback):
-        del name, callback
+        if name == "pre_tool_call":
+            type(self).gate = staticmethod(callback)
 
     def register_tool(self, **kwargs):
         del kwargs
+
+
+def handle_cli(args):
+    return _Ctx.cli(args)
+
+
+def pre_tool_call(tool_name, args):
+    return _Ctx.gate(tool_name, args)
+
+
+def test_live_manifest_matches_registered_tools():
+    from hermes_cli.plugin_validate import validate_plugin_dir
+
+    report = validate_plugin_dir(ROOT)
+    assert report.ok, report.failures
+    assert not [
+        warning for warning in report.warnings if warning.startswith("provides_tools declares ")
+    ], report.warnings
+
+
+@pytest.mark.parametrize("slug", ["default", "Default", " default ", "named"])
+@pytest.mark.parametrize("custom_home", [False, True])
+def test_live_configured_db_path_matches_unpinned_hermes(tmp_path, monkeypatch, slug, custom_home):
+    from hermes_cli.kanban_db import kanban_db_path
+
+    from taskwatch.hermes_board import configured_db_path, db_path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root"))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    if custom_home:
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
+    else:
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    expected = str(kanban_db_path(slug))
+    assert configured_db_path(slug) == expected
+    foreign = str(tmp_path / "foreign.db")
+    monkeypatch.setenv("HERMES_KANBAN_DB", foreign)
+    assert configured_db_path(slug) == expected
+    assert db_path(slug) == foreign
+    assert os.environ["HERMES_KANBAN_DB"] == foreign
+
+
+@pytest.mark.parametrize("slug", ["default", "Default", " default "])
+def test_live_failing_completion_stays_blocked_on_default_aliases(tmp_path, monkeypatch, slug):
+    from hermes_cli.kanban_db import create_task, request_review
+
+    from taskwatch.card_body import dumps
+    from taskwatch.evidence import Run, append_run
+
+    root = tmp_path / "root"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    _start(root, board="default")
+    _write_config(root, slug, "twtest")
+    with _conn("default") as conn:
+        card_id = create_task(
+            conn,
+            title="failed worker",
+            body=dumps({"gate": True, "kind": "worker"}),
+        )
+        assert request_review(conn, card_id, summary="failed result")
+    append_run(
+        State(root),
+        Run("failed-run", card_id, "work", 1, str(root / "work"), False, ()),
+        NOW,
+    )
+    result = pre_tool_call("kanban_complete", {"task_id": card_id, "board": slug})
+    assert result["action"] == "block"
+    assert "exit code" in result["message"]
+    assert _task(card_id, "default").status == "review"
+
+
+def test_live_custom_profile_home_uses_shared_root(tmp_path, monkeypatch):
+    from taskwatch.hermes_board import hermes_root
+
+    root = tmp_path / "custom-root"
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "worker"))
+    assert hermes_root() == root
 
 
 def _isolate(root: Path) -> None:
@@ -205,8 +283,6 @@ def _flow(root: Path, capsys) -> None:
         request_review,
     )
 
-    from taskwatch.cli import handle_cli
-    from taskwatch.gate import pre_tool_call
     from taskwatch.hermes_board import open_board
     from taskwatch.tools import taskwatch_create, taskwatch_reject
 
@@ -214,14 +290,11 @@ def _flow(root: Path, capsys) -> None:
     state = State(root)
     state.append_start("apr-1", NOW, "start the work")
     parser = _parser()
-    with pytest.raises(SystemExit) as caught:
-        handle_cli(parser.parse_args(["doctor", "--root", str(root)]))
+    handle_cli(parser.parse_args(["doctor", "--root", str(root)]))
     doctor = capsys.readouterr().out
-    assert caught.value.code == 1
     assert "board: ok" in doctor
     assert "plugin:main: ok" in doctor
     assert "hermes: ok" in doctor
-    assert "reject: fail" in doctor
 
     with _conn() as conn:
         plain = create_task(conn, title="watched", body="plain", initial_status="blocked")
@@ -349,18 +422,17 @@ def _flow(root: Path, capsys) -> None:
     assert config.board == "twaccept"
 
 
-def test_live_review_gate_reject_reopens_the_fix_worker_in_one_step(monkeypatch):
+def test_live_review_gate_reject_leaves_board_and_records_unchanged():
     root = _tmp_root("tw-review-")
     try:
-        _review_gate(root, monkeypatch)
+        _review_gate(root)
     finally:
         shutil.rmtree(root)
 
 
-def _review_gate(root: Path, monkeypatch) -> None:
+def _review_gate(root: Path) -> None:
     from hermes_cli import kanban_db as kb
 
-    from taskwatch.hermes_board import nested_reopen_available
     from taskwatch.tools import taskwatch_create, taskwatch_reject
 
     _start(root)
@@ -390,25 +462,6 @@ def _review_gate(root: Path, monkeypatch) -> None:
     with _conn() as conn:
         assert kb.request_review(conn, reviewer, summary="reviewed")
 
-    assert nested_reopen_available() is False
-    refused = json.loads(taskwatch_reject({"card_id": reviewer, "reason": "no", "reject_id": "r1"}))
-    assert refused["error"] == "core update needed"
-    assert [_task(item).status for item in (fixer, reviewer, after)] == ["done", "review", "todo"]
-
-    # The upstream change: reopen_review_task nests inside a caller's transaction.
-    source = inspect.getsource(kb.reopen_review_task).replace(
-        "write_txn(conn)", "write_txn(conn, allow_nested=True)"
-    )
-    patched = root / "nested_reopen.py"
-    _write(patched, source)
-    namespace = dict(vars(kb))
-    exec(compile(source, str(patched), "exec"), namespace)
-    monkeypatch.setattr(kb, "reopen_review_task", namespace["reopen_review_task"])
-    assert nested_reopen_available() is True
-
-    args = {"card_id": reviewer, "reason": "wrong result", "reject_id": "r2"}
-    cards = (fixer, reviewer, after)
-
     def trace() -> list:
         with _conn() as conn:
             return [
@@ -417,34 +470,15 @@ def _review_gate(root: Path, monkeypatch) -> None:
                     len(kb.list_comments(conn, item)),
                     len(kb.list_events(conn, item)),
                 )
-                for item in cards
+                for item in (fixer, reviewer, after)
             ]
 
-    # A failure after the first writes of the composite step leaves the board as it was:
-    # no status, comment, or event survives. Without one transaction they would.
     before = trace()
-    real_invalidate = kb.invalidate_descendants_for_parent_reopen
-
-    def broken(*args, **kwargs):
-        raise OSError("injected failure while invalidating the descendants")
-
-    monkeypatch.setattr(kb, "invalidate_descendants_for_parent_reopen", broken)
-    failed = json.loads(taskwatch_reject(args))
-    assert failed["ok"] is False
-    assert failed["retry"] is True
+    records = state.load()
+    refused = json.loads(taskwatch_reject({"card_id": reviewer, "reason": "no", "reject_id": "r1"}))
+    assert refused["error"] == "core update needed"
     assert trace() == before
-    monkeypatch.setattr(kb, "invalidate_descendants_for_parent_reopen", real_invalidate)
-
-    opened = json.loads(taskwatch_reject(args))
-    assert opened["ok"] is True
-    # The fix worker runs again, and nothing behind it can run on the old result.
-    assert [_task(item).status for item in cards] == ["ready", "todo", "todo"]
-    after_reject = trace()
-    assert json.loads(taskwatch_reject(args)) == opened
-    assert trace() == after_reject
-    with _conn() as conn:
-        reopened = [e for e in kb.list_events(conn, reviewer) if e.kind == "review_reopened"]
-    assert len(reopened) == 1
+    assert state.load() == records
 
 
 def test_live_worker_gate_reject_retries_after_the_comment_and_a_failed_reopen(monkeypatch):
@@ -528,8 +562,6 @@ def test_live_scan_warns_once_and_reaches_the_user_through_hermes(capsys):
 
 def _scan_flow(root: Path, capsys) -> None:
     from hermes_cli.kanban_db import create_task, list_tasks
-
-    from taskwatch.cli import handle_cli
 
     _start(root, rewarn_initial_seconds=1, user_notify_unreceived_seconds=1)
     parser = _parser()
@@ -637,8 +669,6 @@ def test_live_conversational_approvals(monkeypatch):
 
 def test_live_scan_unreadable_board(monkeypatch, capsys):
     from hermes_cli.kanban_db import kanban_db_path
-
-    from taskwatch.cli import handle_cli
 
     root = _tmp_root("tw-unreadable-")
     monkeypatch.setenv("HERMES_HOME", str(root))

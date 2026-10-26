@@ -98,6 +98,27 @@ def test_unreadable_config_inside_a_listed_profile_blocks(tmp_path):
     assert "unreadable" in result["message"]
 
 
+def test_one_gate_decision_reads_the_card_once(tmp_path):
+    class Counting(FakeBoard):
+        reads = 0
+
+        def card(self, card_id):
+            type(self).reads += 1
+            return super().card(card_id)
+
+    board = Counting((Card(id="c1", status="running", exit_code=1),))
+    result, _, _ = _call(tmp_path, "kanban_complete", {"task_id": "c1"}, board=board)
+    assert result is not None
+    assert Counting.reads == 1
+
+
+def test_a_failed_card_read_blocks_the_call(tmp_path):
+    board = FakeBoard((Card(id="c1", status="running"),), boom=True)
+    result, _, _ = _call(tmp_path, "kanban_complete", {"task_id": "c1"}, board=board)
+    assert result is not None
+    assert "board read failed" in str(result)
+
+
 def test_passing_gate_approval_freezes_and_records_the_snapshot(tmp_path):
     card = _ready(tmp_path, gate=True, status="review", fingerprint="a" * 40, basis="basis-1")
     board = FakeBoard((card,))
@@ -293,13 +314,14 @@ def _live_call(tmp_path, monkeypatch, pinned, **args):
     """pre_tool_call through gate_context, with Hermes' path function replaced by a model."""
     config = _config(tmp_path)
 
-    def model(slug, *, honor_env):
+    def seen(slug):
         # Hermes: a pin wins over any name; without it, a name picks that board's file.
-        if honor_env and pinned:
+        if pinned:
             return OTHER
         return DB if slug in (None, config.board) else OTHER
 
-    monkeypatch.setattr("taskwatch.hermes_board.db_path", model)
+    monkeypatch.setattr("taskwatch.hermes_board.db_path", seen)
+    monkeypatch.setattr("taskwatch.hermes_board.configured_db_path", lambda slug: DB)
 
     class Raw(FakeBoard):
         def record_snapshot(self, card_id, path):

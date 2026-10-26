@@ -25,8 +25,9 @@ from pathlib import Path
 # The plugin root holds the `taskwatch` package. The script runs from an installed plugin.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from taskwatch.config import config_path, hermes_root, load_config  # noqa: E402
+from taskwatch.config import config_path, load_config  # noqa: E402
 from taskwatch.executor import run_executor  # noqa: E402
+from taskwatch.hermes_board import hermes_root  # noqa: E402
 from taskwatch.protocol import BoardReadError  # noqa: E402
 from taskwatch.state import State  # noqa: E402
 

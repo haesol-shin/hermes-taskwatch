@@ -15,9 +15,10 @@ def _plain(path: str, label: str) -> str:
     return path
 
 
-def service_text(hermes_exe: str, hermes_home: str) -> str:
+def service_text(hermes_exe: str, hermes_home: str, profile: str) -> str:
     exe = _plain(hermes_exe, "hermes")
     home = _plain(hermes_home, "HERMES_HOME")
+    profile_home(home, profile)
     return (
         "[Unit]\n"
         "Description=Scan the taskwatch board once\n"
@@ -25,7 +26,7 @@ def service_text(hermes_exe: str, hermes_home: str) -> str:
         "[Service]\n"
         "Type=oneshot\n"
         f"Environment=HERMES_HOME={home}\n"
-        f"ExecStart={exe} taskwatch scan\n"
+        f"ExecStart={exe} -p {profile} taskwatch scan\n"
     )
 
 

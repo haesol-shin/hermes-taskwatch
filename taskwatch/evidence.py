@@ -108,8 +108,8 @@ class EvidenceBoard:
         runs, counts = self._records()
         return _fill(card, runs, counts)
 
-    def open_wait_ids(self) -> tuple[str, ...]:
-        return self.board.open_wait_ids()
+    def open_wait_ids(self, cards: tuple[Card, ...] | None = None) -> tuple[str, ...]:
+        return self.board.open_wait_ids(cards)
 
     def read_error(self) -> str | None:
         try:
