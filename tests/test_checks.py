@@ -672,3 +672,23 @@ def test_deleted_warning_subscription_makes_the_user_notice_due(tmp_path):
     assert not due(True)
     assert due(False)
     assert due(False, received=NOW)
+
+
+def test_a_later_fail_or_a_blocking_pass_is_not_a_pass(tmp_path):
+    config = _config(tmp_path)
+    card = _ready(tmp_path, gate=True, status="review")
+
+    def reviews(*items):
+        board = FakeBoard((card,))
+        inp = _input(config, board, card_id=card.id, reviews=items)
+        return gate("approve", inp, profile_in_list=True, board_matches=True)
+
+    def review(round_, verdict="PASS", blocking=False):
+        return Review(
+            RECORD_VERSION, round_, card.id, "fp-1", "basis-1", "r.invalid", verdict, blocking
+        )
+
+    assert not reviews(review(1)).block
+    assert reviews(review(1), review(2, "FAIL", True)).block
+    assert reviews(review(1, "PASS", True)).block
+    assert not reviews(review(1, "FAIL", True), review(2)).block

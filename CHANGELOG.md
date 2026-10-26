@@ -14,6 +14,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - `scan` sends the user line through Hermes' send path. A line is recorded only after it was delivered, and an unanswered or unsubscribed warning is checked on every scan.
 - The checks read a card's exit code, outputs, fingerprint, basis, and reject count from run records and the live result, not from the card body.
 - Optional `watch_hook` scan on the Kanban dispatch tick, off unless set.
+- The gate blocks `kanban_complete` and `kanban_request_review` when a check fails. It approves only a result whose fingerprint, basis, and clean state match the recorded PASS as they are now, and it freezes exactly the fingerprint it checked.
 
 ### Fixed
 

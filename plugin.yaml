@@ -8,3 +8,4 @@ platforms:
   - linux
 provides_hooks:
   - on_kanban_dispatch_tick
+  - pre_tool_call

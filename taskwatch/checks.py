@@ -622,13 +622,19 @@ def checklist_problems(path: str | None) -> tuple[str, ...] | None:
 
 
 def _has_pass(reviews: Sequence[Review], card: Card) -> bool:
-    return any(
-        item.card == card.id
-        and item.verdict == "PASS"
+    # The latest round on this exact result and basis decides. An earlier PASS cannot
+    # outvote a later FAIL, and a review that flagged a blocker is not a pass.
+    same = [
+        item
+        for item in reviews
+        if item.card == card.id
         and item.fingerprint == card.fingerprint
         and item.basis == card.basis
-        for item in reviews
-    )
+    ]
+    if not same:
+        return False
+    latest = max(same, key=lambda item: item.round)
+    return latest.verdict == "PASS" and not latest.blocking
 
 
 def _apply_matches(item: Approval, card: Card) -> bool:
