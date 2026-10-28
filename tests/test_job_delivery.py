@@ -44,8 +44,10 @@ elif mode == "slow_success":
     print(json.dumps(ok))
 elif mode == "number_id":
     print(json.dumps({"success": True, "message_id": 42}))
-elif mode == "failure":
-    print(json.dumps({"success": False, "error": "refused"}))
+elif mode == "accepted_error":
+    with open(os.path.join(here, "accepted"), "a", encoding="utf-8") as handle:
+        handle.write("accepted\n")
+    print(json.dumps({"error": "Telegram send failed: Timed out"}))
     sys.exit(1)
 elif mode == "skipped":
     print(json.dumps({"skipped": True, "reason": "duplicate"}))
@@ -225,44 +227,23 @@ def test_attempt_is_durable_as_started_before_the_sender_runs(board: Board, send
     assert statuses(board.get(job.id)) == ["success"]
 
 
-def test_definite_failure_retries_on_the_next_scan_and_the_third_stops(
-    board: Board, sender: Sender
-):
-    sender.modes("failure")
+def test_acceptance_followed_by_an_error_is_unknown_and_never_resent(board: Board, sender: Sender):
+    sender.modes("accepted_error", "success")
     job = finished_job(board)
-    board.scan()
-    after_one = board.get(job.id)
-    assert (after_one.stage, after_one.delivery_failures) == ("deliver_pending", 1)
-    assert after_one.deliveries[0]["status"] == "failure"
-    assert after_one.deliveries[0]["exit_code"] == 1
-    assert "refused" in after_one.deliveries[0]["stdout"]
-    board.scan()
-    assert board.get(job.id).delivery_failures == 2
-    assert board.get(job.id).stage == "deliver_pending"
     board.scan()
     stopped = board.get(job.id)
-    assert (stopped.stage, stopped.wait_reason) == ("user_wait", "delivery_failed")
-    assert stopped.delivery_failures == 3
+    assert (sender.dir / "accepted").read_text(encoding="utf-8") == "accepted\n"
+    assert (stopped.stage, stopped.wait_reason) == ("user_wait", "delivery_unknown")
     assert stopped.resume_stage == "deliver_pending"
-    assert statuses(stopped) == ["failure"] * 3
+    assert statuses(stopped) == ["unknown"]
+    assert stopped.deliveries[0]["exit_code"] == 1
+    assert json.loads(stopped.deliveries[0]["stdout"]) == {
+        "error": "Telegram send failed: Timed out"
+    }
     board.scan()
-    board.scan()
-    assert len(sender.calls()) == 3
+    assert len(sender.calls()) == 1
+    assert (sender.dir / "accepted").read_text(encoding="utf-8") == "accepted\n"
     assert board.get(job.id) == stopped
-
-
-def test_a_success_after_a_failure_finishes_the_job_and_clears_the_count(
-    board: Board, sender: Sender
-):
-    sender.modes("failure", "success")
-    job = finished_job(board)
-    board.scan()
-    assert board.get(job.id).delivery_failures == 1
-    board.scan()
-    done = board.get(job.id)
-    assert done.stage == "done"
-    assert done.delivery_failures == 0
-    assert statuses(done) == ["failure", "success"]
 
 
 def test_timeout_is_unknown_and_never_resent(
@@ -275,7 +256,6 @@ def test_timeout_is_unknown_and_never_resent(
     parked = board.get(job.id)
     assert (parked.stage, parked.wait_reason) == ("user_wait", "delivery_unknown")
     assert statuses(parked) == ["unknown"]
-    assert parked.delivery_failures == 0
     board.scan()
     board.scan()
     assert len(sender.calls()) == 1
@@ -290,7 +270,6 @@ def test_an_unprovable_outcome_is_unknown_and_never_resent(board: Board, sender:
     parked = board.get(job.id)
     assert (parked.stage, parked.wait_reason) == ("user_wait", "delivery_unknown")
     assert statuses(parked) == ["unknown"]
-    assert parked.delivery_failures == 0
     board.scan()
     board.scan()
     assert len(sender.calls()) == 1
@@ -342,7 +321,6 @@ def test_resume_after_unknown_sends_once_without_rerunning_work(board: Board, se
     cli(board, "resume", job.id)
     resumed = board.get(job.id)
     assert resumed.stage == "deliver_pending"
-    assert resumed.delivery_failures == 0
     assert board.scan() == []
     done = board.get(job.id)
     assert done.stage == "done"
@@ -352,21 +330,6 @@ def test_resume_after_unknown_sends_once_without_rerunning_work(board: Board, se
     board.scan()
     assert len(sender.calls()) == 2
     assert done.attempt == job.attempt
-
-
-def test_resume_after_failures_gives_a_fresh_failure_budget(board: Board, sender: Sender):
-    sender.modes("failure")
-    job = finished_job(board)
-    for _ in range(3):
-        board.scan()
-    assert board.get(job.id).wait_reason == "delivery_failed"
-    cli(board, "resume", job.id)
-    assert board.get(job.id).delivery_failures == 0
-    board.scan()
-    again = board.get(job.id)
-    assert (again.stage, again.delivery_failures) == ("deliver_pending", 1)
-    assert len(again.deliveries) == 4
-    assert len(sender.calls()) == 4
 
 
 def test_cancel_before_delivery_sends_nothing(board: Board, sender: Sender):

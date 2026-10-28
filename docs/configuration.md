@@ -265,7 +265,7 @@ internal step command; do not run it alongside the service.
 
 Do these steps in order on the intended host, with approval. Stop at the first failure.
 
-1. Stop new legacy dispatch and let existing cards finish. Do not register a job in both the Hermes board and the standalone job board.
+1. Stop new legacy dispatch and let existing cards finish. Do not register a job in both the Hermes board and the standalone job board. If `<root>/taskwatch/jobs-config.json` already exists, add `deliver_command` to it before running `init` (see [Delivery](#delivery)); `init` validates existing config without changing it. Fresh installations can keep the init-then-edit order below.
 2. Stage the units: `taskwatch --root <root> init --unit-dir <empty-unit-staging-directory>`. This also writes `jobs-config.json` if absent. Nothing is installed or enabled.
 3. Edit `<root>/taskwatch/jobs-config.json`, including `deliver_command` (see [Delivery](#delivery)).
 4. Inspect the staged `hermes-taskwatch-scan.service` and `.timer`, install them into `~/.config/systemd/user/` (replacing the legacy units only as part of this approval), then run `systemctl --user daemon-reload`.
@@ -275,8 +275,8 @@ Do these steps in order on the intended host, with approval. Stop at the first f
 ### Delivery
 
 The `init` draft sets `deliver_command` to `["false", "{message}"]`, which
-intentionally cannot send. Every delivery attempt fails until the operator
-replaces it, so edit it before enabling the timer.
+intentionally cannot send. An attempt with this draft stops for user judgment,
+so replace it before enabling the timer.
 
 `jobs-config.json` requires `deliver_command`: a list of nonempty strings run as
 argv without a shell. Exactly one argument must be the whole string `{message}`;
@@ -285,8 +285,10 @@ destination is a literal argument written in this command, not the job's
 `target` (a workspace path). Example, with a synthetic destination:
 
 ```json
-"deliver_command": ["hermes", "send", "--to", "person.invalid", "--file", "{message}", "--json"]
+"deliver_command": ["hermes", "send", "--to", "discord:#synthetic-channel", "--file", "{message}", "--json"]
 ```
+
+Choose a configured Hermes target with `hermes send --list`.
 
 Hermes is optional. Without it, provide a sender executable for your channel and
 configure its argv instead, for example
@@ -295,8 +297,8 @@ The sender must wait for the channel server's response and implement this contra
 stdout must contain exactly one JSON object, with no diagnostic text around it.
 Write diagnostics to stderr. Both streams and the exit code are recorded.
 For example, exit 0 with `{"success": true, "message_id": "synthetic-message"}`
-confirms sending; a positive nonzero exit with `{"error": "synthetic refusal"}`
-confirms nothing was sent. Do not report an uncertain send as a definite failure.
+confirms sending. Every other outcome is unknown, including a nonzero exit with
+a readable JSON `error`: a timeout or partial send may already have delivered content.
 
 For a job at `deliver_pending`, `scan` runs this step under the state lock after
 the old unit has been released. It writes `delivery.txt` (title from the first
@@ -310,16 +312,14 @@ a present `message_id`. Then the job becomes `done` and is never sent again.
 Success means the command reported acceptance; it is not a read receipt. A
 response with only `skipped` is unknown, not done.
 
-- A positive nonzero exit with a readable JSON `error` and no success is a
-  definite failure. The next scan retries it. The third failure moves the job to
-  `user_wait` with reason `delivery_failed`.
-- Anything else (timeout, unreadable output, signal, ambiguous response) or an
-  earlier attempt still `started` is unknown. The job moves to `user_wait` with
-  reason `delivery_unknown` and is never resent automatically.
-- `resume <id>` restores `deliver_pending`, resets the failure count, and keeps the
-  attempt history; an interrupted `started` attempt is recorded as unknown. Resume
-  after an unknown outcome only when a duplicate message is explicitly accepted,
-  because the earlier message may have been delivered. `cancel` behaves as before.
+- Every non-confirmed outcome (including a readable `error`, timeout, unreadable
+  output, signal, ambiguous response, or an earlier attempt still `started`)
+  moves the job to `user_wait` with reason `delivery_unknown`. It is never resent
+  automatically. Hermes provides neither lookup nor an idempotency key.
+- `resume <id>` restores `deliver_pending` for one new send and keeps the attempt
+  history; an interrupted `started` attempt is recorded as unknown. Resume only
+  when a duplicate message is explicitly accepted, because the earlier message
+  may have been delivered. `cancel` prevents further sends.
 
 ### Recovery and decisions
 

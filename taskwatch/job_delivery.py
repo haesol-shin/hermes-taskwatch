@@ -118,27 +118,21 @@ def _send(command: list[str], lock_fd: int) -> dict:
             and (payload.get("message_id") is not None)
         ):
             result["status"] = "success"
-        elif proc.returncode > 0 and payload.get("error") and not payload.get("success"):
-            result.update(status="failure", error=str(payload["error"]))
         else:
-            result["error"] = "delivery response does not confirm sending or definite failure"
+            result["error"] = str(payload.get("error") or "delivery response does not confirm send")
     except (OSError, ValueError, UnicodeError) as exc:
         result["error"] = str(exc)
     return result
 
 
 def _finish(jobs: Jobs, job: JobState, record: dict, now: float) -> JobState:
-    status = record["status"]
-    failures = job.delivery_failures + 1 if status == "failure" else 0
-    reason = "delivery_unknown" if status == "unknown" else "delivery_failed"
-    stopped = status == "unknown" or failures >= 3
+    success = record["status"] == "success"
     job = replace(
         job,
         deliveries=(*job.deliveries[:-1], record),
-        delivery_failures=failures,
-        stage="done" if status == "success" else "user_wait" if stopped else "deliver_pending",
+        stage="done" if success else "user_wait",
         resume_stage="deliver_pending",
-        wait_reason=reason if stopped else "",
+        wait_reason="" if success else "delivery_unknown",
         error=record["error"],
         ended_at=now,
     )

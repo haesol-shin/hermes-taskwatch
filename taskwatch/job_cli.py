@@ -109,7 +109,6 @@ def _action(jobs: Jobs, args: argparse.Namespace) -> dict:
                 error="",
                 recoveries=0,
                 fix_rounds=int(reviewing),
-                delivery_failures=0,
             )
         job = replace(
             job, events=(*job.events, {"type": command, "at": now, "reason": args.reason})

@@ -35,10 +35,11 @@ release their slots after their service has stopped.
 Successful jobs stop at `deliver_pending`. The next `scan` writes a delivery message
 and runs the configured `deliver_command`, with a fixed 60 second timeout. Only a
 recorded success makes the job `done`; it never sends again. A success response means
-the command reported success, not that the person read the message. A definite failure
-is retried on the next scan, at most three times; an unknown outcome is never resent
-automatically and waits for a user decision. Real omp, service recovery, reboot, and
-real delivery acceptance still need an authorized installation test. See
+the command reported success, not that the person read the message. Every other
+outcome, including a reported error, stops at `user_wait` with `delivery_unknown`.
+It is never resent automatically; the user can resume for one new send or cancel.
+Real omp, service recovery, reboot, and real delivery acceptance still need an
+authorized installation test. See
 [standalone configuration](docs/configuration.md#standalone-jobs) for the submission
 format, delivery, installation switch, recovery, and approval commands.
 
