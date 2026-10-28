@@ -1,11 +1,22 @@
+import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from taskwatch import job_scan
+from taskwatch import job_runner, job_scan
+from taskwatch.job_cli import main as cli_main
+from taskwatch.job_runner import run_job
 from taskwatch.job_scan import Systemd, scan_jobs
-from taskwatch.jobs import JobConfig, Jobs
+from taskwatch.jobs import (
+    MAX_FIX_ROUNDS,
+    MAX_RECOVERIES,
+    JobConfig,
+    Jobs,
+    JobState,
+    progress_fingerprint,
+)
 
 BOOT = "boot-1"
 STALL = 100
@@ -22,11 +33,11 @@ class FakeService:
     def status(self, unit: str) -> str:
         return self.states.get(unit, "missing")
 
-    def start(self, job: dict) -> None:
+    def start(self, job: JobState) -> None:
         if self.start_error:
             raise self.start_error
-        self.started.append(job["unit"])
-        self.states[job["unit"]] = "active"
+        self.started.append(job.unit)
+        self.states[job.unit] = "active"
 
     def stop(self, unit: str) -> bool:
         self.stopped.append(unit)
@@ -68,14 +79,14 @@ class Board:
             **extra,
         }
         self.clock += 1
-        return self.jobs.submit(payload, self.clock)["id"]
+        return self.jobs.submit(payload, self.clock).id
 
-    def get(self, job_id: str) -> dict:
+    def get(self, job_id: str) -> JobState:
         return self.jobs.load()[job_id]
 
     def set(self, job_id: str, **changes: object) -> None:
         job = self.get(job_id)
-        job.update(changes)
+        job = replace(job, **changes)
         self.jobs.save(job, self.clock)
 
     def scan(self, advance: float = 1.0, boot: str = BOOT) -> list[str]:
@@ -92,7 +103,7 @@ class Board:
         self.set(job_id, stage=stage, ended_at=self.clock)
 
     def kill(self, job_id: str) -> None:
-        self.service.states[self.get(job_id)["unit"]] = "inactive"
+        self.service.states[self.get(job_id).unit] = "inactive"
 
 
 @pytest.fixture
@@ -104,8 +115,8 @@ def test_parallel_jobs_fill_slots_and_the_rest_wait(tmp_path: Path) -> None:
     board = Board(tmp_path, slots=3)
     ids = [board.add() for _ in range(5)]
     assert board.scan() == ids[:3]
-    assert [board.get(i)["stage"] for i in ids] == ["work"] * 3 + ["queued"] * 2
-    assert board.get(ids[3])["wait_reason"] == "slot"
+    assert [board.get(i).stage for i in ids] == ["work"] * 3 + ["queued"] * 2
+    assert board.get(ids[3]).wait_reason == "slot"
     assert board.scan() == []
     board.finish_step(ids[0], "deliver_pending")
     board.finish_step(ids[1], "done")
@@ -118,7 +129,7 @@ def test_same_target_waits_until_the_first_job_leaves(board: Board) -> None:
     second = board.add(target="shared")
     other = board.add(target="elsewhere")
     assert board.scan() == [first, other]
-    assert board.get(second)["wait_reason"] == "target"
+    assert board.get(second).wait_reason == "target"
     board.finish_step(first, "deliver_pending")
     board.finish_step(other, "user_wait")
     assert board.scan() == [second]
@@ -133,9 +144,9 @@ def test_slot_and_target_survive_the_gap_between_steps(tmp_path: Path, stage: st
     board.finish_step(first, stage)
     assert board.scan() == [first]
     job = board.get(first)
-    assert (job["stage"], job["attempt"], job["ended_at"]) == (stage, 2, 0.0)
-    assert board.get(waiting)["stage"] == "queued"
-    assert board.service.started == [f"taskwatch-{first}-a1.service", job["unit"]]
+    assert (job.stage, job.attempt, job.ended_at) == (stage, 2, 0.0)
+    assert board.get(waiting).stage == "queued"
+    assert board.service.started == [f"taskwatch-{first}-a1.service", job.unit]
 
 
 def test_gap_job_keeps_slot_even_when_the_scan_runs_between_steps(tmp_path: Path) -> None:
@@ -146,7 +157,7 @@ def test_gap_job_keeps_slot_even_when_the_scan_runs_between_steps(tmp_path: Path
     board.finish_step(first, "check")
     # The next scan must launch the check before it may admit anyone else.
     assert board.scan() == [first]
-    assert board.get(waiting)["wait_reason"] == "slot"
+    assert board.get(waiting).wait_reason == "slot"
 
 
 def test_next_step_waits_until_the_old_service_is_confirmed_stopped(tmp_path: Path) -> None:
@@ -154,16 +165,16 @@ def test_next_step_waits_until_the_old_service_is_confirmed_stopped(tmp_path: Pa
     first = board.add()
     waiting = board.add()
     board.scan()
-    old = board.get(first)["unit"]
+    old = board.get(first).unit
     board.finish_step(first, "check", alive=True)
     board.service.stop_ok = False
     assert board.scan() == []
-    assert board.get(first)["attempt"] == 1
-    assert board.get(waiting)["stage"] == "queued"
+    assert board.get(first).attempt == 1
+    assert board.get(waiting).stage == "queued"
     board.service.stop_ok = True
     assert board.scan() == [first]
     assert board.service.stopped[-1] == old
-    assert board.get(first)["attempt"] == 2
+    assert board.get(first).attempt == 2
 
 
 def test_recovery_keeps_fix_and_recovery_counters(board: Board) -> None:
@@ -173,7 +184,7 @@ def test_recovery_keeps_fix_and_recovery_counters(board: Board) -> None:
     board.kill(job_id)
     assert board.scan() == [job_id]
     job = board.get(job_id)
-    assert (job["stage"], job["fix_rounds"], job["recoveries"], job["session_dir"]) == (
+    assert (job.stage, job.fix_rounds, job.recoveries, job.session_dir) == (
         "review",
         2,
         2,
@@ -184,43 +195,98 @@ def test_recovery_keeps_fix_and_recovery_counters(board: Board) -> None:
 def test_dead_step_resumes_once_and_stale_attempt_is_fenced(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    old = board.get(job_id)["unit"]
+    old = board.get(job_id)
     board.kill(job_id)
     assert board.scan() == [job_id]
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["attempt"], job["recoveries"], job["stage"]) == (2, 1, "work")
-    assert job["unit"] != old
-    assert board.service.started.count(job["unit"]) == 1
-    assert board.jobs.update(job_id, 1, {"error": "late"}, board.clock) is False
-    assert board.jobs.update(job_id, 2, {"error": "live"}, board.clock) is True
+    assert (job.attempt, job.recoveries, job.stage) == (2, 1, "work")
+    assert job.unit != old.unit
+    assert board.service.started.count(job.unit) == 1
+    # The runner of the replaced attempt can neither start nor publish; the live one can.
+    assert run_job(board.jobs, board.config, job_id, old.attempt) == 2
+    assert not job_runner._cas(board.jobs, old, {"work"}, lambda j: {"error": "late"})
+    assert job_runner._cas(board.jobs, job, {"work"}, lambda j: {"error": "live"})
+    assert board.get(job_id).error == "live"
+    board.set(job_id, stage="cancelled")
+    assert not job_runner._cas(board.jobs, job, {"work"}, lambda j: {"error": "after cancel"})
+    assert board.get(job_id).error == "live"
 
 
 def test_recoveries_are_capped_then_the_job_waits_for_the_user(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    for _ in range(job_scan.MAX_RECOVERIES):
+    for _ in range(MAX_RECOVERIES):
         board.kill(job_id)
         assert board.scan() == [job_id]
     board.kill(job_id)
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["resume_stage"]) == (
+    assert (job.stage, job.wait_reason, job.resume_stage) == (
         "user_wait",
         "recoveries_exhausted",
         "work",
     )
-    assert job["unit"] == ""
+    assert job.unit == ""
 
 
-def test_external_pending_is_not_replayed(board: Board) -> None:
+def test_resume_into_review_fix_reserves_a_round_and_keeps_the_cap(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    board.set(job_id, external_pending=True)
+    board.set(job_id, stage="fix", fix_rounds=MAX_FIX_ROUNDS)
     board.kill(job_id)
-    assert board.scan() == []
-    assert board.get(job_id)["wait_reason"] == "external_pending"
-    assert len(board.service.started) == 1
+    board.scan()
+    assert board.get(job_id).wait_reason == "review_exhausted"
+    reason = "approve a new cycle"
+    root = str(board.jobs.state.root)
+    assert cli_main(["--root", root, "resume", job_id, "--reason", reason]) == 0
+    seen = []
+    while job_id in board.scan():
+        job = board.get(job_id)
+        seen.append((job.fix_rounds, job.recoveries))
+        board.kill(job_id)
+    assert seen == [(1, 0), (2, 0), (3, 0)]
+    assert board.get(job_id).wait_reason == "review_exhausted"
+
+
+def test_resume_into_check_repair_keeps_the_recovery_budget(board: Board) -> None:
+    job_id = board.add()
+    board.scan()
+    board.set(job_id, stage="fix", fix_rounds=0, recoveries=MAX_RECOVERIES)
+    board.kill(job_id)
+    board.scan()
+    assert board.get(job_id).wait_reason == "recoveries_exhausted"
+    root = str(board.jobs.state.root)
+    assert cli_main(["--root", root, "resume", job_id, "--reason", "retry"]) == 0
+    assert board.get(job_id).fix_rounds == 0
+    assert board.scan() == [job_id]
+    board.kill(job_id)
+    assert board.scan() == [job_id]
+    assert (board.get(job_id).fix_rounds, board.get(job_id).recoveries) == (0, 1)
+
+
+def test_unreadable_progress_parks_only_that_job_and_the_scan_continues(
+    board: Board, tmp_path: Path
+) -> None:
+    bad = board.add()
+    board.scan()
+    work = tmp_path / "workspace"
+    work.mkdir()
+    output = work / "out.txt"
+    output.write_text("output")
+    board.set(bad, workspace=str(work), progress_hash=progress_fingerprint(board.get(bad), work))
+    good = board.add()
+    output.chmod(0)
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file modes; the read failure cannot be produced")
+    try:
+        assert board.scan() == [good]
+    finally:
+        output.chmod(0o600)
+    parked = board.get(bad)
+    assert (parked.stage, parked.wait_reason) == ("user_wait", "progress_unreadable")
+    assert "out.txt" in parked.error or "Permission" in parked.error
+    assert board.get(good).stage == "work"
 
 
 def test_stall_is_suspected_first_then_stopped_and_recovered(board: Board) -> None:
@@ -228,22 +294,22 @@ def test_stall_is_suspected_first_then_stopped_and_recovered(board: Board) -> No
     board.scan()
     assert board.scan(STALL + 1) == []
     job = board.get(job_id)
-    assert job["stall_suspected"] is True
+    assert job.stall_suspected is True
     assert board.service.stopped == []
     assert board.scan() == [job_id]
     assert board.service.stopped == [f"taskwatch-{job_id}-a1.service"]
     job = board.get(job_id)
-    assert (job["attempt"], job["recoveries"], job["stall_suspected"]) == (2, 1, False)
+    assert (job.attempt, job.recoveries, job.stall_suspected) == (2, 1, False)
 
 
 def test_progress_clears_a_stall_suspicion(board: Board) -> None:
     job_id = board.add()
     board.scan()
     board.scan(STALL + 1)
-    assert board.get(job_id)["stall_suspected"] is True
+    assert board.get(job_id).stall_suspected is True
     board.set(job_id, last_progress_at=board.clock)
     assert board.scan() == []
-    assert board.get(job_id)["stall_suspected"] is False
+    assert board.get(job_id).stall_suspected is False
     assert board.service.stopped == []
 
 
@@ -263,8 +329,8 @@ def test_progress_or_output_change_counts_as_progress(board: Board, name: str) -
     board.scan(STALL - 10)
     (workspace / name).write_text("step 1", encoding="utf-8")
     board.scan(20)  # 110 s since the baseline: stalled unless the change counted
-    assert board.get(job_id)["stall_suspected"] is False
-    assert board.get(job_id)["progress_hash"] != ""
+    assert board.get(job_id).stall_suspected is False
+    assert board.get(job_id).progress_hash != ""
 
 
 def test_unchanged_files_do_not_count_as_progress(board: Board) -> None:
@@ -274,7 +340,7 @@ def test_unchanged_files_do_not_count_as_progress(board: Board) -> None:
     (workspace / "progress.md").write_text("step 1", encoding="utf-8")
     board.scan()
     board.scan(STALL + 1)
-    assert board.get(job_id)["stall_suspected"] is True
+    assert board.get(job_id).stall_suspected is True
 
 
 def test_log_growth_does_not_count_as_progress(board: Board) -> None:
@@ -284,7 +350,7 @@ def test_log_growth_does_not_count_as_progress(board: Board) -> None:
     board.scan()
     (workspace / "agent.log").write_text("noise", encoding="utf-8")
     board.scan(STALL + 1)
-    assert board.get(job_id)["stall_suspected"] is True
+    assert board.get(job_id).stall_suspected is True
 
 
 def test_agent_evidence_timestamp_counts_as_progress(board: Board) -> None:
@@ -293,7 +359,7 @@ def test_agent_evidence_timestamp_counts_as_progress(board: Board) -> None:
     board.scan()
     board.set(job_id, evidence_at=board.clock + STALL)
     board.scan(STALL + 1)
-    assert board.get(job_id)["stall_suspected"] is False
+    assert board.get(job_id).stall_suspected is False
 
 
 def test_expected_wait_extends_the_stall_limit(board: Board) -> None:
@@ -301,9 +367,9 @@ def test_expected_wait_extends_the_stall_limit(board: Board) -> None:
     board.scan()
     board.scan()
     board.scan(STALL + 1)
-    assert board.get(job_id)["stall_suspected"] is False
+    assert board.get(job_id).stall_suspected is False
     board.scan(500)
-    assert board.get(job_id)["stall_suspected"] is True
+    assert board.get(job_id).stall_suspected is True
 
 
 def test_unconfirmed_stall_stop_parks_but_keeps_slot_until_confirmed(tmp_path: Path) -> None:
@@ -315,72 +381,72 @@ def test_unconfirmed_stall_stop_parks_but_keeps_slot_until_confirmed(tmp_path: P
     board.service.stop_ok = False
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["attempt"]) == (
+    assert (job.stage, job.wait_reason, job.attempt) == (
         "user_wait",
         "stall_stop_unconfirmed",
         1,
     )
-    assert job["unit"] != ""
+    assert job.unit != ""
     assert board.scan() == []
-    assert board.get(waiting)["stage"] == "queued"
+    assert board.get(waiting).stage == "queued"
     board.service.stop_ok = True
     assert board.scan() == [waiting]
-    assert board.get(job_id)["unit"] == ""
+    assert board.get(job_id).unit == ""
 
 
 def test_unknown_service_state_parks_but_keeps_unit_and_target(board: Board) -> None:
     job_id = board.add(target="shared")
     other = board.add(target="shared")
     board.scan()
-    unit = board.get(job_id)["unit"]
+    unit = board.get(job_id).unit
     board.service.states[unit] = "unknown"
     board.service.stop_ok = False
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["unit"]) == ("user_wait", "service_unknown", unit)
-    assert board.get(other)["wait_reason"] == "target"
+    assert (job.stage, job.wait_reason, job.unit) == ("user_wait", "service_unknown", unit)
+    assert board.get(other).wait_reason == "target"
     board.service.stop_ok = True
     assert board.scan() == [other]
-    assert board.get(job_id)["unit"] == ""
+    assert board.get(job_id).unit == ""
 
 
 def test_reboot_confirms_the_old_group_dead_before_resuming(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    old = board.get(job_id)["unit"]
+    old = board.get(job_id).unit
     board.service.states[old] = "active"
     assert board.scan(boot="boot-2") == [job_id]
     assert board.service.stopped == [old]
     job = board.get(job_id)
-    assert (job["boot_id"], job["attempt"], job["recoveries"]) == ("boot-2", 2, 1)
+    assert (job.boot_id, job.attempt, job.recoveries) == ("boot-2", 2, 1)
     assert board.scan(boot="boot-2") == []
 
 
 def test_reboot_with_unconfirmed_old_group_does_not_resume(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    board.service.states[board.get(job_id)["unit"]] = "active"
+    board.service.states[board.get(job_id).unit] = "active"
     board.service.stop_ok = False
     assert board.scan(boot="boot-2") == []
     job = board.get(job_id)
-    assert (job["attempt"], job["recoveries"], job["stage"]) == (1, 0, "work")
+    assert (job.attempt, job.recoveries, job.stage) == (1, 0, "work")
 
 
 def test_exhausted_recoveries_never_free_a_live_unit(board: Board) -> None:
     job_id = board.add(target="shared")
     other = board.add(target="shared")
     board.scan()
-    board.set(job_id, recoveries=job_scan.MAX_RECOVERIES)
-    board.service.states[board.get(job_id)["unit"]] = "active"
+    board.set(job_id, recoveries=MAX_RECOVERIES)
+    board.service.states[board.get(job_id).unit] = "active"
     board.service.stop_ok = False
     assert board.scan(boot="boot-2") == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["unit"] != "") == (
+    assert (job.stage, job.wait_reason, job.unit != "") == (
         "user_wait",
         "recoveries_exhausted",
         True,
     )
-    assert board.get(other)["wait_reason"] == "target"
+    assert board.get(other).wait_reason == "target"
 
 
 def test_reboot_does_not_touch_waiting_or_finished_jobs(board: Board) -> None:
@@ -390,7 +456,7 @@ def test_reboot_does_not_touch_waiting_or_finished_jobs(board: Board) -> None:
     board.set(approval, stage="approval_wait", unit="")
     board.set(done, stage="done", unit="", ended_at=board.clock)
     assert board.scan(boot="boot-2") == []
-    assert board.get(approval)["stage"] == "approval_wait"
+    assert board.get(approval).stage == "approval_wait"
 
 
 def test_approval_wait_releases_slot_only_after_the_old_unit_is_dead(tmp_path: Path) -> None:
@@ -398,38 +464,38 @@ def test_approval_wait_releases_slot_only_after_the_old_unit_is_dead(tmp_path: P
     job_id = board.add()
     waiting = board.add()
     board.scan()
-    unit = board.get(job_id)["unit"]
+    unit = board.get(job_id).unit
     board.set(job_id, stage="approval_wait", resume_stage="work")
     board.service.stop_ok = False
     assert board.scan() == []
-    assert board.get(job_id)["unit"] == unit
-    assert board.get(waiting)["stage"] == "queued"
+    assert board.get(job_id).unit == unit
+    assert board.get(waiting).stage == "queued"
     board.service.stop_ok = True
     assert board.scan() == [waiting]
-    assert board.get(job_id)["unit"] == ""
-    assert board.get(job_id)["stage"] == "approval_wait"
+    assert board.get(job_id).unit == ""
+    assert board.get(job_id).stage == "approval_wait"
 
 
 def test_approved_job_resumes_stage_after_old_unit_confirmed_dead(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    unit = board.get(job_id)["unit"]
+    unit = board.get(job_id).unit
     board.set(job_id, stage="queued", approval_required=False, resume_stage="fix")
     board.service.stop_ok = False
     assert board.scan() == []
-    assert board.get(job_id)["wait_reason"] == "unit"
+    assert board.get(job_id).wait_reason == "unit"
     board.service.stop_ok = True
     assert board.scan() == [job_id]
     job = board.get(job_id)
-    assert (job["stage"], job["attempt"]) == ("fix", 2)
-    assert job["unit"] != unit
+    assert (job.stage, job.attempt) == ("fix", 2)
+    assert job.unit != unit
 
 
 def test_unapproved_job_waits_for_approval_without_starting(board: Board) -> None:
     job_id = board.add(approval_required=True)
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["resume_stage"]) == (
+    assert (job.stage, job.wait_reason, job.resume_stage) == (
         "approval_wait",
         "approval_required",
         "work",
@@ -445,12 +511,12 @@ def test_cancelled_job_holds_slot_until_stop_is_confirmed(tmp_path: Path) -> Non
     board.set(job_id, stage="cancelled")
     board.service.stop_ok = False
     assert board.scan() == []
-    assert board.get(job_id)["unit"] != ""
-    assert board.get(waiting)["stage"] == "queued"
+    assert board.get(job_id).unit != ""
+    assert board.get(waiting).stage == "queued"
     board.service.stop_ok = True
     assert board.scan() == [waiting]
-    assert board.get(job_id)["unit"] == ""
-    assert board.get(job_id)["stage"] == "cancelled"
+    assert board.get(job_id).unit == ""
+    assert board.get(job_id).stage == "cancelled"
     assert board.scan() == []
 
 
@@ -467,10 +533,10 @@ def test_job_waits_for_predecessors_to_pass(board: Board) -> None:
     first = board.add()
     second = board.add(predecessors=[first])
     assert board.scan() == [first]
-    assert board.get(second)["wait_reason"] == f"predecessor:{first}"
+    assert board.get(second).wait_reason == f"predecessor:{first}"
     board.finish_step(first, "review")
     assert board.scan() == [first]
-    assert board.get(second)["stage"] == "queued"
+    assert board.get(second).stage == "queued"
     board.finish_step(first, "deliver_pending")
     assert board.scan() == [second]
 
@@ -482,7 +548,7 @@ def test_blocked_predecessor_keeps_followers_waiting(board: Board, stage: str) -
     board.scan()
     board.set(first, stage=stage, unit="")
     assert board.scan() == []
-    assert board.get(second)["wait_reason"] == f"predecessor:{first}"
+    assert board.get(second).wait_reason == f"predecessor:{first}"
 
 
 def test_corrupt_journal_starts_nothing(board: Board) -> None:
@@ -508,36 +574,36 @@ def test_tampered_snapshot_starts_nothing(board: Board) -> None:
 def test_changed_input_parks_the_job_instead_of_starting(board: Board) -> None:
     bad = board.add()
     good = board.add()
-    copied = Path(next(iter(board.get(bad)["input_hashes"])))
+    copied = Path(next(iter(board.get(bad).input_hashes)))
     copied.write_text("tampered", encoding="utf-8")
     assert board.scan() == [good]
     job = board.get(bad)
-    assert (job["stage"], job["wait_reason"], job["unit"]) == ("user_wait", "inputs_invalid", "")
+    assert (job.stage, job.wait_reason, job.unit) == ("user_wait", "inputs_invalid", "")
 
 
 def test_changed_input_in_a_gap_parks_only_after_the_old_unit_is_confirmed(board: Board) -> None:
     job_id = board.add()
     board.scan()
     board.finish_step(job_id, "check", alive=True)
-    Path(next(iter(board.get(job_id)["input_hashes"]))).write_text("x", encoding="utf-8")
+    Path(next(iter(board.get(job_id).input_hashes))).write_text("x", encoding="utf-8")
     board.service.stop_ok = False
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["unit"] != "") == ("check", True)
+    assert (job.stage, job.unit != "") == ("check", True)
     board.service.stop_ok = True
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["unit"]) == ("user_wait", "inputs_invalid", "")
+    assert (job.stage, job.wait_reason, job.unit) == ("user_wait", "inputs_invalid", "")
 
 
 def test_lost_start_ack_does_not_spawn_twice(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    unit = board.get(job_id)["unit"]
+    unit = board.get(job_id).unit
     board.service.started.clear()
     assert board.scan() == []
     assert board.service.started == []
-    assert board.get(job_id)["unit"] == unit
+    assert board.get(job_id).unit == unit
 
 
 def test_failed_start_keeps_the_reservation_and_counts_as_a_recovery(board: Board) -> None:
@@ -545,14 +611,14 @@ def test_failed_start_keeps_the_reservation_and_counts_as_a_recovery(board: Boar
     board.service.start_error = RuntimeError("no bus")
     assert board.scan() == [job_id]
     job = board.get(job_id)
-    assert (job["attempt"], job["unit"], job["error"]) == (
+    assert (job.attempt, job.unit, job.error) == (
         1,
         f"taskwatch-{job_id}-a1.service",
         "start_failed: no bus",
     )
     board.service.start_error = None
     assert board.scan() == [job_id]
-    assert board.get(job_id)["attempt"] == 2
+    assert board.get(job_id).attempt == 2
 
 
 def test_finished_job_unit_is_forgotten(board: Board) -> None:
@@ -561,7 +627,7 @@ def test_finished_job_unit_is_forgotten(board: Board) -> None:
     board.finish_step(job_id, "deliver_pending")
     board.kill(job_id)
     board.scan()
-    assert board.get(job_id)["unit"] == ""
+    assert board.get(job_id).unit == ""
 
 
 def test_scan_events_record_why_a_step_was_relaunched(board: Board) -> None:
@@ -569,7 +635,7 @@ def test_scan_events_record_why_a_step_was_relaunched(board: Board) -> None:
     board.scan()
     board.kill(job_id)
     board.scan()
-    kinds = [e["kind"] for e in board.get(job_id)["events"] if e.get("source") == "scan"]
+    kinds = [e["kind"] for e in board.get(job_id).events if e.get("source") == "scan"]
     assert kinds == ["service_dead"]
 
 
@@ -670,16 +736,16 @@ def test_dead_review_fix_attempts_are_capped_at_three_rounds(board: Board) -> No
     for expected in (2, 3):
         board.kill(job_id)
         assert board.scan() == [job_id]
-        assert board.get(job_id)["fix_rounds"] == expected
+        assert board.get(job_id).fix_rounds == expected
     board.kill(job_id)
     assert board.scan() == []
     job = board.get(job_id)
-    assert (job["stage"], job["wait_reason"], job["resume_stage"]) == (
+    assert (job.stage, job.wait_reason, job.resume_stage) == (
         "user_wait",
         "review_exhausted",
         "fix",
     )
-    assert (job["fix_rounds"], job["recoveries"], job["unit"]) == (3, 0, "")
+    assert (job.fix_rounds, job.recoveries, job.unit) == (3, 0, "")
     assert len(board.service.started) == 3  # the first launch was the work step
 
 
@@ -690,7 +756,7 @@ def test_fix_without_a_review_round_uses_the_recovery_budget(board: Board) -> No
     board.kill(job_id)
     assert board.scan() == [job_id]
     job = board.get(job_id)
-    assert (job["fix_rounds"], job["recoveries"]) == (0, 1)
+    assert (job.fix_rounds, job.recoveries) == (0, 1)
 
 
 def test_review_fix_lost_start_consumes_a_round(board: Board) -> None:
@@ -702,4 +768,4 @@ def test_review_fix_lost_start_consumes_a_round(board: Board) -> None:
     assert board.scan() == [job_id]
     board.service.start_error = None
     assert board.scan() == [job_id]
-    assert board.get(job_id)["fix_rounds"] == 3
+    assert board.get(job_id).fix_rounds == 3

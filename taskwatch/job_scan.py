@@ -11,14 +11,13 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
-from .jobs import progress_fingerprint
+from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobState, progress_fingerprint
 
 SLOT_STAGES = frozenset({"work", "check", "review", "fix"})
 DONE_STAGES = frozenset({"deliver_pending", "done"})
-MAX_RECOVERIES = 3
-MAX_FIX_ROUNDS = 3
 DEAD = frozenset({"inactive", "missing"})
 LIVE_STATES = frozenset({"active", "activating", "reloading", "deactivating"})
 _SPAWN_ERRORS = (OSError, RuntimeError, subprocess.SubprocessError)
@@ -45,12 +44,12 @@ class Systemd:
             return "active"
         return "inactive" if state in ("inactive", "failed") else "unknown"
 
-    def start(self, job: dict) -> None:
+    def start(self, job: JobState) -> None:
         argv = [
             "systemd-run",
             "--user",
             "--quiet",
-            f"--unit={job['unit']}",
+            f"--unit={job.unit}",
             "--property=KillMode=control-group",
             sys.executable,
             "-m",
@@ -58,9 +57,9 @@ class Systemd:
             "--root",
             str(self.root),
             "run",
-            job["id"],
+            job.id,
             "--attempt",
-            str(job["attempt"]),
+            str(job.attempt),
         ]
         subprocess.run(argv, check=True, capture_output=True, timeout=30)
 
@@ -139,152 +138,158 @@ class _Scan:
         self.boot = boot
         self.service = service
         self.launched: list[str] = []
-        self.all: dict[str, dict] = {}
-        self.order: list[dict] = []
+        self.all: dict[str, JobState] = {}
+        self.order: list[str] = []
+
+    def _save(self, job: JobState) -> None:
+        self.jobs.save(job, self.now)
+        self.all[job.id] = job
 
     def run(self) -> list[str]:
         self.all = self.jobs.load()
-        self.order = sorted(self.all.values(), key=_rank)
-        for job in self.order:
-            self._tend(job)
-        for job in self.order:
+        self.order = [job.id for job in sorted(self.all.values(), key=_rank)]
+        for identifier in self.order:
+            self._tend(self.all[identifier])
+        for identifier in self.order:
+            job = self.all[identifier]
             if _is_gap(job) and self._confirm_dead(job):
-                self._launch(job, job["stage"])
-        for job in self.order:
+                self._launch(job, job.stage)
+        for identifier in self.order:
+            job = self.all[identifier]
             if _is_pending(job):
                 self._admit(job)
         return self.launched
 
     # -- existing jobs ----------------------------------------------------------------------
 
-    def _tend(self, job: dict) -> None:
-        if job["stage"] in SLOT_STAGES:
-            if job["unit"] and job["ended_at"] <= 0:
+    def _tend(self, job: JobState) -> None:
+        if job.stage in SLOT_STAGES:
+            if job.unit and job.ended_at <= 0:
                 self._watch(job)
-        elif job["unit"]:
+        elif job.unit:
             self._release(job)
-        if job["stage"] == "queued" and job.get("approval_required"):
-            job.update(stage="approval_wait", resume_stage="work", wait_reason="approval_required")
-            self._event(job, "approval_wait")
-            self.jobs.save(job, self.now)
+        job = self.all[job.id]
+        if job.stage == "queued" and job.approval_required:
+            job = replace(
+                job, stage="approval_wait", resume_stage="work", wait_reason="approval_required"
+            )
+            self._save(self._event(job, "approval_wait"))
 
-    def _confirm_dead(self, job: dict) -> bool:
+    def _confirm_dead(self, job: JobState) -> bool:
         """True when the job's whole old service is dead; never assumed, even after a reboot."""
-        if self.service.status(job["unit"]) in DEAD or self.service.stop(job["unit"]):
+        if self.service.status(job.unit) in DEAD or self.service.stop(job.unit):
             return True
-        if job["error"] != "stop_unconfirmed":
-            job["error"] = "stop_unconfirmed"
-            self.jobs.save(job, self.now)
+        if job.error != "stop_unconfirmed":
+            self._save(replace(job, error="stop_unconfirmed"))
         return False
 
-    def _release(self, job: dict) -> None:
+    def _release(self, job: JobState) -> None:
         """Free a unit that no stage owns (cancel, wait, done, re-queue) once it is dead.
 
         The slot and target stay held until the whole service is confirmed stopped.
         """
         if self._confirm_dead(job):
-            job["unit"] = ""
-            self._event(job, "unit_released")
-            self.jobs.save(job, self.now)
+            self._save(self._event(replace(job, unit=""), "unit_released"))
 
-    def _watch(self, job: dict) -> None:
-        if job["boot_id"] and job["boot_id"] != self.boot:
-            self._event(job, "reboot_interrupted")
-            self._recover(job)
+    def _watch(self, job: JobState) -> None:
+        if job.boot_id and job.boot_id != self.boot:
+            self._recover(self._event(job, "reboot_interrupted"))
             return
-        status = self.service.status(job["unit"])
+        status = self.service.status(job.unit)
         if status in DEAD:
-            self._event(job, "service_dead")
-            self._recover(job)
+            self._recover(self._event(job, "service_dead"))
         elif status == "active":
             self._check_stall(job)
         else:
             self._park(job, "service_unknown")
 
-    def _check_stall(self, job: dict) -> None:
-        self._refresh_progress(job)
-        seen = max(job["last_progress_at"], job["evidence_at"])
-        stalled = self.now - seen >= self.config.stall_seconds + job.get("expected_wait_seconds", 0)
+    def _check_stall(self, job: JobState) -> None:
+        job = self._refresh_progress(job)
+        if job is None:
+            return
+        seen = max(job.last_progress_at, job.evidence_at)
+        stalled = self.now - seen >= self.config.stall_seconds + job.expected_wait_seconds
         if not stalled:
-            if job["stall_suspected"]:
-                job["stall_suspected"] = False
-                self.jobs.save(job, self.now)
-        elif not job["stall_suspected"]:
-            job["stall_suspected"] = True
-            self._event(job, "stall_suspected")
-            self.jobs.save(job, self.now)
-        elif self.service.stop(job["unit"]):
-            self._event(job, "stall_stopped")
-            self._recover(job)
+            if job.stall_suspected:
+                self._save(replace(job, stall_suspected=False))
+        elif not job.stall_suspected:
+            self._save(self._event(replace(job, stall_suspected=True), "stall_suspected"))
+        elif self.service.stop(job.unit):
+            self._recover(self._event(job, "stall_stopped"))
         else:
             self._park(job, "stall_stop_unconfirmed")
 
-    def _refresh_progress(self, job: dict) -> None:
-        if not job["workspace"]:
-            return  # the runner has not prepared it yet; nothing to compare
-        digest = progress_fingerprint(job, Path(job["workspace"]))
-        if digest == job["progress_hash"]:
-            return
+    def _refresh_progress(self, job: JobState) -> JobState | None:
+        """Return None after parking a job whose progress files cannot be read."""
+        if not job.workspace:
+            return job
+        try:
+            digest = progress_fingerprint(job, Path(job.workspace))
+        except OSError as exc:
+            # One unreadable file must not stop the scan of unrelated jobs.
+            self._park(job, "progress_unreadable", f"progress_unreadable: {exc}")
+            return None
+        if digest == job.progress_hash:
+            return job
         # The first hash is only a baseline: absent files are not progress.
-        if job["progress_hash"]:
-            job["last_progress_at"] = self.now
-        job["progress_hash"] = digest
-        self.jobs.save(job, self.now)
+        job = replace(
+            job,
+            progress_hash=digest,
+            last_progress_at=self.now if job.progress_hash else job.last_progress_at,
+        )
+        self._save(job)
+        return job
 
-    def _recover(self, job: dict) -> None:
-        if job["external_pending"]:
-            self._park(job, "external_pending")
-        elif job["stage"] == "fix" and job["fix_rounds"] > 0:
+    def _recover(self, job: JobState) -> None:
+        if job.stage == "fix" and job.fix_rounds > 0:
             self._retry_review_fix(job)
-        elif job["recoveries"] >= MAX_RECOVERIES:
+        elif job.recoveries >= MAX_RECOVERIES:
             self._park(job, "recoveries_exhausted")
         elif self._confirm_dead(job):
-            job["recoveries"] += 1
-            self._launch(job, job["stage"])
+            self._launch(replace(job, recoveries=job.recoveries + 1), job.stage)
 
-    def _retry_review_fix(self, job: dict) -> None:
+    def _retry_review_fix(self, job: JobState) -> None:
         """A failed fix after a review counts as a round: the cap bounds model invocations."""
-        if job["fix_rounds"] >= MAX_FIX_ROUNDS:
+        if job.fix_rounds >= MAX_FIX_ROUNDS:
             self._park(job, "review_exhausted")
         elif self._confirm_dead(job):
-            job["fix_rounds"] += 1
-            self._launch(job, "fix")
+            self._launch(replace(job, fix_rounds=job.fix_rounds + 1), "fix")
 
     # -- launching --------------------------------------------------------------------------
 
-    def _admit(self, job: dict) -> None:
+    def _admit(self, job: JobState) -> None:
         reason = self._blocker(job)
         if reason is None:
             self._launch(job, _launch_stage(job))
-        elif job["stage"] == "queued" and job["wait_reason"] != reason:
-            job["wait_reason"] = reason
-            self.jobs.save(job, self.now)
+        elif job.stage == "queued" and job.wait_reason != reason:
+            self._save(replace(job, wait_reason=reason))
 
-    def _blocker(self, job: dict) -> str | None:
-        if job["unit"]:
+    def _blocker(self, job: JobState) -> str | None:
+        if job.unit:
             return "unit"
-        for pred in job["predecessors"]:
-            if self.all.get(pred, {}).get("stage") not in DONE_STAGES:
+        for pred in job.predecessors:
+            if pred not in self.all or self.all[pred].stage not in DONE_STAGES:
                 return f"predecessor:{pred}"
         slots, targets = self._busy()
-        if job.get("target") and job["target"] in targets:
+        if job.target and job.target in targets:
             return "target"
         return "slot" if slots >= self.config.slots else None
 
     def _busy(self) -> tuple[int, set[str]]:
         held = [job for job in self.all.values() if _holds(job)]
-        return len(held), {job["target"] for job in held if job.get("target")}
+        return len(held), {job.target for job in held if job.target}
 
-    def _launch(self, job: dict, stage: str) -> None:
+    def _launch(self, job: JobState, stage: str) -> None:
         try:
             self.jobs.verify_inputs(job)
         except _INPUT_ERRORS as exc:
             self._park(job, "inputs_invalid", str(exc))
             return
-        job["attempt"] += 1
-        job.update(
+        job = replace(
+            job,
+            attempt=job.attempt + 1,
             stage=stage,
-            unit=f"taskwatch-{job['id']}-a{job['attempt']}.service",
+            unit=f"taskwatch-{job.id}-a{job.attempt + 1}.service",
             boot_id=self.boot,
             started_at=self.now,
             ended_at=0.0,
@@ -294,50 +299,53 @@ class _Scan:
             error="",
         )
         # Reserve before the service call: a lost ack is found later by unit name.
-        self.jobs.save(job, self.now)
-        self.launched.append(job["id"])
+        self._save(job)
+        self.launched.append(job.id)
         try:
             self.service.start(job)
         except _SPAWN_ERRORS as exc:
-            job["error"] = f"start_failed: {exc}"
-            self._event(job, "start_failed")
-            self.jobs.save(job, self.now)
+            self._save(self._event(replace(job, error=f"start_failed: {exc}"), "start_failed"))
 
-    def _park(self, job: dict, reason: str, error: str = "") -> None:
+    def _park(self, job: JobState, reason: str, error: str = "") -> None:
         """Wait for the user. The unit is kept until it is confirmed dead, so slot and target
         are never freed while a process may still run."""
-        if job["stage"] in SLOT_STAGES:
-            job["resume_stage"] = job["stage"]
-        job.update(stage="user_wait", wait_reason=reason, error=error or reason, ended_at=self.now)
-        self._event(job, "parked", reason=reason)
-        self.jobs.save(job, self.now)
-        if job["unit"]:
+        job = replace(
+            job,
+            resume_stage=job.stage if job.stage in SLOT_STAGES else job.resume_stage,
+            stage="user_wait",
+            wait_reason=reason,
+            error=error or reason,
+            ended_at=self.now,
+        )
+        job = self._event(job, "parked", reason=reason)
+        self._save(job)
+        if job.unit:
             self._release(job)
 
-    def _event(self, job: dict, kind: str, **extra: object) -> None:
-        event = {"source": "scan", "kind": kind, "at": self.now, "attempt": job["attempt"]}
-        job["events"].append({**event, **extra})
+    def _event(self, job: JobState, kind: str, **extra: object) -> JobState:
+        event = {"source": "scan", "kind": kind, "at": self.now, "attempt": job.attempt}
+        return replace(job, events=(*job.events, {**event, **extra}))
 
 
-def _rank(job: dict) -> tuple[float, str]:
-    return job["last_progress_at"], job["id"]
+def _rank(job: JobState) -> tuple[float, str]:
+    return job.last_progress_at, job.id
 
 
-def _holds(job: dict) -> bool:
+def _holds(job: JobState) -> bool:
     # Any recorded unit may still be running, whatever the stage says, so it holds.
-    return bool(job["unit"])
+    return bool(job.unit)
 
 
-def _launch_stage(job: dict) -> str:
-    if job["stage"] in SLOT_STAGES:
-        return job["stage"]
-    resume = job["resume_stage"]
+def _launch_stage(job: JobState) -> str:
+    if job.stage in SLOT_STAGES:
+        return job.stage
+    resume = job.resume_stage
     return resume if resume in SLOT_STAGES else "work"
 
 
-def _is_gap(job: dict) -> bool:
-    return job["stage"] in SLOT_STAGES and bool(job["unit"]) and job["ended_at"] > 0
+def _is_gap(job: JobState) -> bool:
+    return job.stage in SLOT_STAGES and bool(job.unit) and job.ended_at > 0
 
 
-def _is_pending(job: dict) -> bool:
-    return job["stage"] == "queued" or (job["stage"] in SLOT_STAGES and not job["unit"])
+def _is_pending(job: JobState) -> bool:
+    return job.stage == "queued" or (job.stage in SLOT_STAGES and not job.unit)

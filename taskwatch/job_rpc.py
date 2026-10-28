@@ -11,12 +11,13 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 DEFAULT_FRAME_BYTES = 1 << 20
 DEFAULT_REASSEMBLED_BYTES = 64 << 20
 _MAX_SUBAGENT_PAGES = 100_000
+_TERMINAL = frozenset({"completed", "failed", "aborted"})
 TICK_EVERY = 0.2
 
 
@@ -26,6 +27,10 @@ class RpcError(Exception):
 
 class RpcTimeout(RpcError):
     pass
+
+
+class MissingTranscript(RpcError):
+    """A completed subagent has no readable transcript, so its work cannot be judged."""
 
 
 class RpcAborted(RpcError):
@@ -91,6 +96,11 @@ class FrameDecoder:
             raise RpcError("rpc frame must be an object")
         return frame
 
+    def finish(self) -> None:
+        """End of stream: a sequence still open was cut off."""
+        if self._pending:
+            raise RpcError("rpc chunk sequence interrupted by end of stream")
+
 
 def _base64(value: object) -> bytes:
     if not isinstance(value, str):
@@ -126,7 +136,6 @@ class RpcClient:
         self.stderr_path = stderr_path
         self.abort = abort or threading.Event()
         self.poll = poll
-        self.protocol = 1
         self.max_frame = DEFAULT_FRAME_BYTES
         self._cv = threading.Condition()
         self._send_lock = threading.Lock()
@@ -180,7 +189,6 @@ class RpcClient:
         if not isinstance(versions, list) or 2 not in versions:
             raise RpcError("omp RPC protocol v2 is required for lossless review output")
         self.request("negotiate_protocol", timeout, protocolVersion=2)
-        self.protocol = 2
         self._decoder.max_bytes = int(
             ready.get("maxReassembledFrameBytes") or DEFAULT_REASSEMBLED_BYTES
         )
@@ -197,6 +205,7 @@ class RpcClient:
                 frame = decoder.push(json.loads(raw))
                 if frame is not None:
                     self._dispatch(frame)
+            decoder.finish()
         except (ValueError, RpcError) as exc:
             with self._cv:
                 bad = exc if isinstance(exc, RpcError) else RpcError(f"bad rpc line: {exc}")
@@ -378,11 +387,14 @@ class RpcClient:
         text = self.request("get_last_assistant_text", timeout).get("text")
         return text if isinstance(text, str) else ""
 
-    def children(self, timeout: float) -> list[dict]:
+    def children(self, timeout: float, cached: Mapping[str, dict] | None = None) -> list[dict]:
         """Every subagent seen or listed, each with its complete transcript.
 
-        Terminal subagents leave get_subagents but stay readable by id, so the lifecycle
-        frames are merged with the live registry and every transcript is read by selector.
+        Terminal subagents leave get_subagents, so lifecycle frames are merged with the live
+        registry. Saved terminal transcripts do not depend on continued server retention.
+        `cached` maps f"{id}\\0{sessionFile or ''}" to the caller's saved record: a terminal one
+        with a transcript keeps it, because the server evicts old transcript ids.
+        A completed child whose transcript was never collected is missing evidence.
         """
         listed = self.request("get_subagents", timeout).get("subagents")
         if not isinstance(listed, list):
@@ -396,7 +408,29 @@ class RpcClient:
         for child in merged.values():
             if child.get("status") == "started":
                 child["status"] = "running"
-        return [{**child, "messages": self._messages(child, timeout)} for child in merged.values()]
+        return [self._collect(child, cached or {}, timeout) for child in merged.values()]
+
+    def _collect(self, child: dict, cached: Mapping[str, dict], timeout: float) -> dict:
+        old = cached.get(f"{child.get('id')}\0{child.get('sessionFile') or ''}")
+        if (
+            old is not None
+            and old.get("status") in _TERMINAL
+            and child.get("status") in _TERMINAL
+            and isinstance(old.get("messages"), list)
+            and old["messages"]
+        ):
+            return {**child, "messages": old["messages"]}
+        try:
+            messages = self._messages(child, timeout)
+        except RpcAborted:
+            raise
+        except RpcError as exc:
+            raise MissingTranscript(
+                f"the transcript of subagent {child.get('id')} is unavailable: {exc}"
+            ) from exc
+        if not messages and child.get("status") == "completed":
+            raise MissingTranscript(f"the transcript of subagent {child.get('id')} is missing")
+        return {**child, "messages": messages}
 
     def _messages(self, child: dict, timeout: float) -> list:
         ident = child.get("id")

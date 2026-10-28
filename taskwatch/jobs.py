@@ -6,9 +6,11 @@ import math
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 
 from .state import RecordError, State, _create_new, _make_dirs
 
@@ -27,6 +29,79 @@ STAGES = frozenset(
     }
 )
 KINDS = frozenset({"code", "design", "document", "research"})
+MAX_FIX_ROUNDS = 3
+MAX_RECOVERIES = 3
+
+
+def _freeze(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _json_value(value):
+    if isinstance(value, Mapping):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class JobState:
+    id: str
+    receipt_key: str
+    approval_source: str
+    approval_scope: str
+    prompt: str
+    kind: str
+    target: str
+    intent: str
+    spec: str
+    outputs: tuple[str, ...]
+    check_command: tuple[str, ...]
+    checklist: str
+    progress: str
+    inputs: Mapping[str, tuple[str, ...]]
+    input_hashes: Mapping[str, str]
+    predecessors: tuple[str, ...]
+    expected_wait_seconds: int
+    approval_required: bool
+    stage: str = "queued"
+    wait_reason: str = ""
+    attempt: int = 0
+    unit: str = ""
+    boot_id: str = ""
+    session_path: str = ""
+    session_dir: str = ""
+    workspace: str = ""
+    started_at: float = 0.0
+    ended_at: float = 0.0
+    last_progress_at: float = 0.0
+    progress_hash: str = ""
+    evidence_at: float = 0.0
+    stall_suspected: bool = False
+    recoveries: int = 0
+    fix_rounds: int = 0
+    resume_stage: str = "work"
+    events: tuple[Mapping, ...] = ()
+    checks: tuple[Mapping, ...] = ()
+    reviews: tuple[Mapping, ...] = ()
+    fingerprint: str = ""
+    basis: str = ""
+    error: str = ""
+    guideline_hashes: Mapping[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, (Mapping, list, tuple)):
+                object.__setattr__(self, field.name, _freeze(value))
+
+    def to_json(self) -> dict:
+        return {field.name: _json_value(getattr(self, field.name)) for field in fields(self)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,10 +149,10 @@ class Jobs:
     def __init__(self, root: Path) -> None:
         self.state = State(root.resolve())
 
-    def folder(self, job: dict) -> Path:
-        return self.state.dir / "jobs" / job["id"]
+    def folder(self, job: JobState) -> Path:
+        return self.state.dir / "jobs" / job.id
 
-    def load(self) -> dict[str, dict]:
+    def load(self) -> dict[str, JobState]:
         with self.state.lock():
             latest = {}
             receipts = {}
@@ -90,45 +165,42 @@ class Jobs:
                 if key in receipts and receipts[key] != identifier:
                     raise RecordError("jobs.jsonl: conflicting receipt key")
                 receipts[key] = identifier
-                latest[identifier] = job
+                try:
+                    latest[identifier] = JobState(**job)
+                except TypeError as exc:
+                    raise RecordError(f"jobs.jsonl: invalid job fields: {exc}") from exc
             return latest
 
-    def save(self, job: dict, now: float) -> None:
-        _validate_record(job)
+    def save(self, job: JobState, now: float) -> None:
+        data = job.to_json()
+        _validate_record(data)
         with self.state.lock():
             self.load()
             self.state.append_record(
-                "jobs.jsonl", {"job": job, "sha256": _digest(job)}, _stamp(now)
+                "jobs.jsonl", {"job": data, "sha256": _digest(data)}, _stamp(now)
             )
 
-    def update(self, job_id: str, attempt: int, changes: dict, now: float) -> bool:
-        with self.state.lock():
-            job = self.load()[job_id]
-            if job["attempt"] != attempt or job["stage"] not in {"work", "check", "review", "fix"}:
-                return False
-            self.save({**job, **changes}, now)
-            return True
-
-    def submit(self, payload: dict, now: float | None = None) -> dict:
+    def submit(self, payload: dict, now: float | None = None) -> JobState:
         now = time.time() if now is None else now
         if not isinstance(payload, dict) or not isinstance(payload.get("receipt_key"), str):
             raise ValueError("submit needs a receipt_key")
         with self.state.lock():
             existing = self.load()
             for job in existing.values():
-                if job["receipt_key"] == payload["receipt_key"]:
+                if job.receipt_key == payload["receipt_key"]:
                     return job
             data = _submission(payload)
             missing = set(data["predecessors"]) - existing.keys()
             if missing:
                 raise ValueError(f"unknown predecessors: {', '.join(sorted(missing))}")
-            job = {**data, **_initial(now), "id": uuid.uuid4().hex}
-            self._copy_inputs(job)
+            data.update(id=uuid.uuid4().hex, last_progress_at=now)
+            self._copy_inputs(data)
+            job = JobState(**data)
             self.save(job, now)
             return job
 
     def _copy_inputs(self, job: dict) -> None:
-        directory = self.folder(job) / "inputs"
+        directory = self.state.dir / "jobs" / job["id"] / "inputs"
         _make_dirs(directory)
         hashes = {}
         for role, sources in {
@@ -149,39 +221,10 @@ class Jobs:
                 job["inputs"][role] = copied
         job["input_hashes"] = hashes
 
-    def verify_inputs(self, job: dict) -> None:
-        for name, digest in job["input_hashes"].items():
+    def verify_inputs(self, job: JobState) -> None:
+        for name, digest in job.input_hashes.items():
             if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
                 raise ValueError("copied input does not match its hash")
-
-
-def _initial(now: float) -> dict:
-    return {
-        "stage": "queued",
-        "wait_reason": "",
-        "attempt": 0,
-        "unit": "",
-        "boot_id": "",
-        "session_path": "",
-        "session_dir": "",
-        "workspace": "",
-        "started_at": 0.0,
-        "ended_at": 0.0,
-        "last_progress_at": now,
-        "progress_hash": "",
-        "evidence_at": 0.0,
-        "stall_suspected": False,
-        "recoveries": 0,
-        "fix_rounds": 0,
-        "resume_stage": "work",
-        "events": [],
-        "checks": [],
-        "reviews": [],
-        "fingerprint": "",
-        "basis": "",
-        "error": "",
-        "external_pending": False,
-    }
 
 
 def _strings(value: object, label: str, *, nonempty: bool = False) -> None:
@@ -282,7 +325,7 @@ def _validate_record(job: dict) -> None:
 
 
 def _validate_controls(job: dict) -> None:
-    for key in ("approval_required", "external_pending", "stall_suspected"):
+    for key in ("approval_required", "stall_suspected"):
         if type(job.get(key)) is not bool:
             raise RecordError(f"jobs.jsonl: invalid {key}")
     for key in (
@@ -332,11 +375,11 @@ def _validate_manifest(job: dict) -> None:
         raise RecordError("jobs.jsonl: incomplete input hash manifest")
 
 
-def progress_fingerprint(job: dict, workspace: Path) -> str:
+def progress_fingerprint(job: JobState, workspace: Path) -> str:
     """Hash progress and outputs, never growing session or command logs."""
     workspace = workspace.resolve()
     digest = hashlib.sha256()
-    for relative in [job["progress"], *job["outputs"]]:
+    for relative in [job.progress, *job.outputs]:
         path = (workspace / relative).resolve()
         inside = not Path(relative).is_absolute() and path.is_relative_to(workspace)
         data = path.read_bytes() if inside and path.is_file() else b""

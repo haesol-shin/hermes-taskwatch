@@ -88,21 +88,26 @@ completed, appear in that manifest, and have its named outputs present. The runn
 retrieves complete child transcripts through public RPC, not the task preview.
 Review delegation uses a separate `reviews/<review-round>/children.json` in the
 job folder, with outputs relative to that review evidence folder. Child
-transcripts are cached per session across interruption. If prior child evidence
-is unavailable or corrupt, recovery stops for user judgment instead of assuming
-that no children ran.
+transcripts are cached per session across interruption. Completed transcripts
+are reused without requiring the server to retain their IDs. An empty initial
+transcript is missing evidence. If child evidence is unavailable or corrupt,
+recovery stops for user judgment instead of assuming that no children ran.
 
 Code results must be committed and clean. Other results use hashes of named
-output paths and file contents. A review is accepted only for the current result
+output paths and file contents. Before accepting a review, the runner rechecks
+the accepted command log hash, required files, checklist, work-child evidence,
+and every copied input hash. A review is accepted only for the current result
 and current intent, spec, and review profile basis. The review session is separate
 from the work session. Re-review includes prior findings, and three automatic
-fix rounds are the limit before user judgment.
+fix rounds are the limit before user judgment. An approved resume into a review
+fix reserves the first round of the new cycle before it starts.
 
 The scanner starts ready jobs with free slots, preserves slots between steps,
 and holds a target until the old service is confirmed stopped. It records and
-recovers dead runs, two-scan stalls, and reboot interruptions. Missing inputs,
-corrupt records, unknown service outcomes, exhausted recovery/fix budgets, approval
-waits, blocked predecessors, and cancellations prevent automatic completion.
+recovers dead runs, two-scan stalls, and reboot interruptions. An unreadable
+progress or output file parks only its job; unrelated jobs continue scanning.
+Missing inputs, corrupt records, unknown service outcomes, exhausted recovery/fix
+budgets, approval waits, blocked predecessors, and cancellations prevent automatic completion.
 See [standalone configuration](configuration.md#standalone-jobs) for commands and
 the timer entry point. Successful checks and review lead to `deliver_pending`;
 this version has no delivery action.

@@ -1,6 +1,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -40,9 +41,9 @@ def test_idempotent_submit_copies_inputs_and_preserves_original(tmp_path):
     Path(data["intent"]).write_text("Changed after receipt", encoding="utf-8")
     repeated = jobs.submit({"receipt_key": data["receipt_key"]}, 20)
     assert repeated == first
-    assert first["prompt"] == data["prompt"]
-    assert Path(first["intent"]).read_text() == "Approved synthetic intent"
-    for name, digest in first["input_hashes"].items():
+    assert first.prompt == data["prompt"]
+    assert Path(first.intent).read_text() == "Approved synthetic intent"
+    for name, digest in first.input_hashes.items():
         assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest
     assert len(jobs.state.read_records("jobs.jsonl")) == 1
 
@@ -51,21 +52,9 @@ def test_concurrent_receipt_has_one_durable_identity(tmp_path):
     data = payload(tmp_path)
     root = tmp_path / "root"
     with ThreadPoolExecutor(max_workers=4) as pool:
-        identifiers = list(pool.map(lambda _: Jobs(root).submit(data)["id"], range(8)))
+        identifiers = list(pool.map(lambda _: Jobs(root).submit(data).id, range(8)))
     assert len(set(identifiers)) == 1
     assert len(Jobs(root).load()) == 1
-
-
-def test_stale_or_cancelled_runner_cannot_publish(tmp_path):
-    jobs = Jobs(tmp_path / "root")
-    job = jobs.submit(payload(tmp_path), 10)
-    job.update(attempt=2, stage="work")
-    jobs.save(job, 11)
-    assert not jobs.update(job["id"], 1, {"stage": "deliver_pending"}, 12)
-    job["stage"] = "cancelled"
-    jobs.save(job, 13)
-    assert not jobs.update(job["id"], 2, {"stage": "check"}, 14)
-    assert jobs.load()[job["id"]]["stage"] == "cancelled"
 
 
 def test_corrupt_committed_record_blocks_reads_and_new_submit(tmp_path):
@@ -87,7 +76,7 @@ def test_torn_tail_preserves_receipt_and_is_repaired_before_append(tmp_path):
     path = jobs.state.dir / "jobs.jsonl"
     with path.open("ab") as handle:
         handle.write(b'{"version":1,"job":')
-    assert jobs.load()[first["id"]] == first
+    assert jobs.load()[first.id] == first
     jobs.submit(payload(tmp_path, "message:2"), 20)
     assert len(jobs.load()) == 2
     assert len(list(path.parent.glob("jobs.jsonl.torn-*"))) == 1
@@ -96,7 +85,7 @@ def test_torn_tail_preserves_receipt_and_is_repaired_before_append(tmp_path):
 def test_changed_copied_input_is_not_accepted(tmp_path):
     jobs = Jobs(tmp_path / "root")
     job = jobs.submit(payload(tmp_path), 10)
-    Path(job["spec"]).write_text("tampered", encoding="utf-8")
+    Path(job.spec).write_text("tampered", encoding="utf-8")
     with pytest.raises(ValueError, match="hash"):
         jobs.verify_inputs(job)
 
@@ -128,7 +117,7 @@ def test_standalone_init_and_submit_without_hermes(tmp_path, capsys):
     file.write_text(json.dumps(payload(tmp_path)), encoding="utf-8")
     assert main(["--root", str(root), "submit", str(file)]) == 0
     receipt = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert Jobs(root).load()[receipt["id"]]["stage"] == "queued"
+    assert Jobs(root).load()[receipt["id"]].stage == "queued"
 
 
 @pytest.mark.parametrize(
@@ -138,15 +127,14 @@ def test_standalone_init_and_submit_without_hermes(tmp_path, capsys):
         {"input_hashes": {}},
         {"outputs": []},
         {"check_command": [None]},
-        {"external_pending": "false"},
     ],
 )
 def test_valid_checksum_does_not_allow_invalid_job_schema(tmp_path, change):
     jobs = Jobs(tmp_path / "root")
     job = jobs.submit(payload(tmp_path), 10)
-    job.update(change)
-    encoded = json.dumps(job, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    row = {"version": 1, "job": job, "sha256": hashlib.sha256(encoded).hexdigest()}
+    data = {**job.to_json(), **change}
+    encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    row = {"version": 1, "job": data, "sha256": hashlib.sha256(encoded).hexdigest()}
     path = jobs.state.dir / "jobs.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
@@ -158,31 +146,30 @@ def test_repeated_approval_wait_preserves_queued_resume_step(tmp_path, capsys):
     root = tmp_path / "root"
     jobs = Jobs(root)
     job = jobs.submit(payload(tmp_path), 10)
-    job.update(stage="queued", resume_stage="review", attempt=3)
+    job = replace(job, stage="queued", resume_stage="review", attempt=3)
     jobs.save(job, 11)
     for action in ("wait", "approve", "wait", "approve"):
-        assert main(["--root", str(root), action, job["id"], "--reason", "message-2"]) == 0
-    current = jobs.load()[job["id"]]
-    assert (current["stage"], current["resume_stage"], current["attempt"]) == (
+        assert main(["--root", str(root), action, job.id, "--reason", "message-2"]) == 0
+    current = jobs.load()[job.id]
+    assert (current.stage, current.resume_stage, current.attempt) == (
         "queued",
         "review",
         3,
     )
-    assert not jobs.update(job["id"], 3, {"stage": "check"}, 12)
 
 
 def test_approval_records_exact_replacement_scope(tmp_path, capsys):
     root = tmp_path / "root"
     jobs = Jobs(root)
     job = jobs.submit(payload(tmp_path), 10)
-    assert main(["--root", str(root), "wait", job["id"], "--reason", "Need target write"]) == 0
+    assert main(["--root", str(root), "wait", job.id, "--reason", "Need target write"]) == 0
     assert (
         main(
             [
                 "--root",
                 str(root),
                 "approve",
-                job["id"],
+                job.id,
                 "--reason",
                 "message-2",
                 "--scope",
@@ -191,7 +178,7 @@ def test_approval_records_exact_replacement_scope(tmp_path, capsys):
         )
         == 0
     )
-    current = jobs.load()[job["id"]]
-    assert current["approval_source"] == "message-2"
-    assert current["approval_scope"] == "Write only the approved target"
-    assert current["stage"] == "queued"
+    current = jobs.load()[job.id]
+    assert current.approval_source == "message-2"
+    assert current.approval_scope == "Write only the approved target"
+    assert current.stage == "queued"

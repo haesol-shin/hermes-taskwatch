@@ -11,7 +11,8 @@ A turn runs when a prompt arrives (the Nth prompt over all processes takes turn 
   die_after_children: "read" exits once a child transcript was fully read; "now" at once
   followup_error: stopReason of an async follow-up run that ends after prompt_result
   reply: str                the final assistant text
-  die: true                 exit after agent_start
+  die: true                 exit after agent_start, before the session has any content
+  die_after_content: true   write the prompt to the session file, then exit
   no_agent_start, no_settle: skip that frame / never settle
   status: prompt_result status (default completed)
   sleep: seconds to wait before finishing the turn
@@ -105,7 +106,8 @@ def open_session(cmd: dict) -> None:
     global session_file
     directory = Path(cmd["sessionDir"])
     directory.mkdir(parents=True, exist_ok=True)
-    existing = sorted(directory.glob("*.jsonl"))
+    # Like the public contract: only the newest nonempty session is resumable.
+    existing = [f for f in sorted(directory.glob("*.jsonl")) if f.stat().st_size > 0]
     resumed = bool(existing)
     session_file = existing[-1] if existing else directory / "s1.jsonl"
     session_file.touch()
@@ -120,6 +122,14 @@ def open_session(cmd: dict) -> None:
     )
 
 
+def record_prompt(message: str) -> None:
+    if session_file is not None:
+        with session_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"prompt": message}) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
 def prompt(cmd: dict) -> None:
     global settled, reply
     turn = next_turn()
@@ -127,7 +137,9 @@ def prompt(cmd: dict) -> None:
     respond(cmd, {})
     if not turn.get("no_agent_start"):
         emit({"type": "agent_start"})
-    if turn.get("die"):
+    if turn.get("die") or turn.get("die_after_content"):
+        if turn.get("die_after_content"):
+            record_prompt(cmd["message"])
         os._exit(3)
     time.sleep(turn.get("sleep", 0))
     for rel, text in turn.get("writes", {}).items():
@@ -157,9 +169,7 @@ def prompt(cmd: dict) -> None:
         with LOCK:
             sys.stdout.write(json.dumps(big) + "\n")
             sys.stdout.flush()
-    if session_file is not None:
-        with session_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"prompt": cmd["message"]}) + "\n")
+    record_prompt(cmd["message"])
     emit({"type": "agent_end", "messages": [], "isTerminal": True, "yielded": True})
     followup = turn.get("followup_error")
     emit(

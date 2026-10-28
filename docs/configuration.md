@@ -264,13 +264,13 @@ The job retains its parallel slot through work, checks, review, and fixes.
 The target is locked across these stages. A blocked predecessor leaves
 the successor queued. An unrelated target can still start.
 Dead or reboot-interrupted runs resume only after the old service is known
-to have stopped. Unknown service or external outcome requires user judgment.
+to have stopped. An unknown service outcome requires user judgment.
 Unchanged progress and output content first produces a stall suspicion;
 another unchanged scan stops the service and recovers. Log growth alone is
 not progress. Expected waits delay stall recovery.
 
 Three consecutive failed recoveries stop for user judgment. Passing checks
-reset that recovery budget. The independent review has a separate lifetime
+reset that recovery budget. The independent review has a separate per-cycle
 cap of three automatic fix rounds. A fresh review uses `docs/review/` profiles
 and the existing verdict JSON contract. Fingerprints and review basis are
 computed by code; changing either invalidates the earlier pass.
@@ -284,8 +284,10 @@ taskwatch --root <root> cancel <id> --reason "User cancelled"
 
 Wait and cancel fence late output immediately. The scanner confirms service
 termination before reusing the slot or target. Approval resumes the saved step;
-an explicit user resume opens a new recovery/fix cycle. Unresolved external
-outcomes cannot be resumed automatically. No command sends a message.
+an explicit user resume opens a new recovery/fix cycle. Resuming a review fix
+reserves its first round before launch. Check repairs keep the separate recovery
+budget. No command sends a message. External outcome reconciliation is outside
+this version.
 
 `approve --scope` records a replacement approved scope together with the approval
 source. Omit it to preserve the original scope, such as an initial approval wait.

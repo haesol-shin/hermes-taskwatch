@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .jobs import Jobs, load_job_config
@@ -54,10 +55,10 @@ def _dispatch(args: argparse.Namespace, root: Path):
     if args.command == "init":
         return _init(root, args.unit_dir)
     if args.command == "submit":
-        return jobs.submit(json.loads(args.file.read_text(encoding="utf-8")))
+        return jobs.submit(json.loads(args.file.read_text(encoding="utf-8"))).to_json()
     if args.command == "show":
         records = jobs.load()
-        return records[args.job] if args.job else list(records.values())
+        return records[args.job].to_json() if args.job else [j.to_json() for j in records.values()]
     if args.command == "scan":
         from .job_scan import scan_jobs
 
@@ -78,29 +79,42 @@ def _action(jobs: Jobs, args: argparse.Namespace) -> dict:
         job = jobs.load()[args.job]
         command = args.command
         if command == "cancel":
-            job.update(stage="cancelled", wait_reason=args.reason)
+            job = replace(job, stage="cancelled", wait_reason=args.reason)
         elif command == "wait":
-            if job["stage"] not in {"work", "check", "review", "fix", "queued"}:
+            if job.stage not in {"work", "check", "review", "fix", "queued"}:
                 raise ValueError("only an unfinished job can wait for approval")
-            resume = job["resume_stage"] if job["stage"] == "queued" else job["stage"]
-            job.update(resume_stage=resume, stage="approval_wait", wait_reason=args.reason)
+            resume = job.resume_stage if job.stage == "queued" else job.stage
+            job = replace(job, resume_stage=resume, stage="approval_wait", wait_reason=args.reason)
         elif command == "approve":
-            if job["stage"] != "approval_wait":
+            if job.stage != "approval_wait":
                 raise ValueError("job is not waiting for approval")
-            job.update(
+            job = replace(
+                job,
                 approval_required=False,
                 approval_source=args.reason,
-                approval_scope=args.scope if args.scope is not None else job["approval_scope"],
+                approval_scope=args.scope if args.scope is not None else job.approval_scope,
                 stage="queued",
                 wait_reason="",
             )
         elif command == "resume":
-            if job["stage"] != "user_wait" or job["external_pending"]:
-                raise ValueError("job needs user judgment or unresolved external outcome")
-            job.update(stage="queued", wait_reason="", error="", recoveries=0, fix_rounds=0)
-        job["events"].append({"type": command, "at": now, "reason": args.reason})
+            if job.stage != "user_wait":
+                raise ValueError("job needs user judgment")
+            # A resume into a review fix opens a new cycle and spends its first round now, so
+            # the cap still bounds fixes; a check repair keeps the separate recovery budget.
+            reviewing = job.resume_stage == "fix" and job.fix_rounds > 0
+            job = replace(
+                job,
+                stage="queued",
+                wait_reason="",
+                error="",
+                recoveries=0,
+                fix_rounds=int(reviewing),
+            )
+        job = replace(
+            job, events=(*job.events, {"type": command, "at": now, "reason": args.reason})
+        )
         jobs.save(job, now)
-        return job
+        return job.to_json()
 
 
 def _init(root: Path, unit_dir: Path | None) -> dict:
