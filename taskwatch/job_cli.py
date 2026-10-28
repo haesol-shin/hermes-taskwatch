@@ -5,10 +5,10 @@ import json
 import os
 import sys
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
-from .jobs import Jobs, load_job_config
+from .jobs import JobConfig, Jobs, load_job_config
 from .state import RecordError, _create_new, _make_dirs
 
 
@@ -121,13 +121,7 @@ def _init(root: Path, unit_dir: Path | None) -> dict:
     directory = root / "taskwatch"
     _make_dirs(directory)
     config = directory / "jobs-config.json"
-    data = {
-        "version": 1,
-        "slots": 2,
-        "stall_seconds": 1800,
-        "omp_command": ["omp"],
-        "rpc_timeout": 3600,
-    }
+    data = {"version": 1, **asdict(JobConfig())}
     if not config.exists():
         _create_new(config, (json.dumps(data, indent=2) + "\n").encode(), 0o600)
     load_job_config(root)

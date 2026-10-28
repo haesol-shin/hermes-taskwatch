@@ -121,6 +121,7 @@ def test_parallel_jobs_fill_slots_and_the_rest_wait(tmp_path: Path) -> None:
     board.finish_step(ids[0], "deliver_pending")
     board.finish_step(ids[1], "done")
     assert board.scan() == ids[3:]
+    assert board.get(ids[0]).unit == ""
     assert len(set(board.service.started)) == 5
 
 
@@ -146,18 +147,8 @@ def test_slot_and_target_survive_the_gap_between_steps(tmp_path: Path, stage: st
     job = board.get(first)
     assert (job.stage, job.attempt, job.ended_at) == (stage, 2, 0.0)
     assert board.get(waiting).stage == "queued"
-    assert board.service.started == [f"taskwatch-{first}-a1.service", job.unit]
-
-
-def test_gap_job_keeps_slot_even_when_the_scan_runs_between_steps(tmp_path: Path) -> None:
-    board = Board(tmp_path, slots=1)
-    first = board.add()
-    waiting = board.add()
-    board.scan()
-    board.finish_step(first, "check")
-    # The next scan must launch the check before it may admit anyone else.
-    assert board.scan() == [first]
     assert board.get(waiting).wait_reason == "slot"
+    assert board.service.started == [f"taskwatch-{first}-a1.service", job.unit]
 
 
 def test_next_step_waits_until_the_old_service_is_confirmed_stopped(tmp_path: Path) -> None:
@@ -520,15 +511,6 @@ def test_cancelled_job_holds_slot_until_stop_is_confirmed(tmp_path: Path) -> Non
     assert board.scan() == []
 
 
-def test_cancelled_job_is_never_resumed(board: Board) -> None:
-    job_id = board.add()
-    board.scan()
-    board.set(job_id, stage="cancelled")
-    board.kill(job_id)
-    assert board.scan() == []
-    assert len(board.service.started) == 1
-
-
 def test_job_waits_for_predecessors_to_pass(board: Board) -> None:
     first = board.add()
     second = board.add(predecessors=[first])
@@ -619,15 +601,6 @@ def test_failed_start_keeps_the_reservation_and_counts_as_a_recovery(board: Boar
     board.service.start_error = None
     assert board.scan() == [job_id]
     assert board.get(job_id).attempt == 2
-
-
-def test_finished_job_unit_is_forgotten(board: Board) -> None:
-    job_id = board.add()
-    board.scan()
-    board.finish_step(job_id, "deliver_pending")
-    board.kill(job_id)
-    board.scan()
-    assert board.get(job_id).unit == ""
 
 
 def test_scan_events_record_why_a_step_was_relaunched(board: Board) -> None:

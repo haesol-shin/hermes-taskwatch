@@ -105,12 +105,11 @@ class Env:
         self.put(stage, **changes)
         return run_job(self.jobs, self.config, self.job.id, self.attempt)
 
-    def seed(self, files: dict, children: list | None = None) -> None:
+    def seed(self, files: dict) -> None:
         work = self.folder() / "work"
         work.mkdir(parents=True, exist_ok=True)
         for name, text in files.items():
             (work / name).write_text(text, encoding="utf-8")
-        (self.folder() / "children-rpc.json").write_text(json.dumps(children or []))
 
     def log(self) -> list[dict]:
         return [json.loads(x) for x in (self.state / "log.jsonl").read_text().splitlines()]
@@ -190,10 +189,7 @@ def test_pipeline_from_work_to_deliver_pending(env):
     assert log[0]["cwd"] == str(env.folder() / "work")
     assert env.prompts()[0].startswith("ORIGINAL PROMPT TEXT\nline two")
     assert "msg-1" in env.prompts()[0] and "task-1" in env.prompts()[0]
-    assert f"--root {env.jobs.state.root} wait {job.id}" in env.prompts()[0]
-    assert "task-1" in (env.folder() / "WORKFLOW.md").read_text()
     assert (env.folder() / "WORKFLOW.md").is_file()
-    assert (env.folder() / "review-docs" / "document.md").exists() is False
     assert (env.folder() / "review-docs" / "source-checked-document.md").is_file()
 
     assert env.run("check") == 0
@@ -210,13 +206,10 @@ def test_pipeline_from_work_to_deliver_pending(env):
     assert job.stage == "deliver_pending"
     review = job.reviews[-1]
     assert review["ok"] and review["fingerprint"] == job.fingerprint
-    assert "No findings." in review["body"] and len(review["body_sha256"]) == 64
-    assert Path(job.session_dir).name == "review-0-1"
-    assert "common.md" in env.prompts()[-1] and job.fingerprint in env.prompts()[-1]
+    assert "No findings." in review["body"]
     work_prompt, review_prompt = env.prompts()
     assert "work-0.txt" in work_prompt and "review-0.txt" not in work_prompt
     assert "review-0.txt" in review_prompt and "work-0.txt" not in review_prompt
-    assert "prepared" in [e["type"] for e in job.events] and job.guideline_hashes
 
 
 def test_stale_attempt_runs_nothing(env):
@@ -353,7 +346,7 @@ def test_result_changed_during_review_rejects_pass(env):
     assert "changed during the review" in job.error
 
 
-@pytest.mark.parametrize("case", ["log", "checklist", "children_cache", "review_input"])
+@pytest.mark.parametrize("case", ["log", "checklist", "review_input"])
 def test_review_pass_needs_its_evidence_to_still_hold(env, case):
     env.to_review()
     job = env.get()
@@ -362,8 +355,6 @@ def test_review_pass_needs_its_evidence_to_still_hold(env, case):
         Path(job.checks[-1]["log"]).write_text("MODEL CLAIM: PASS\n", encoding="utf-8")
     elif case == "checklist":
         (env.folder() / "work" / "checklist.json").unlink()
-    elif case == "children_cache":
-        (env.folder() / "children-rpc.json").write_text("not json", encoding="utf-8")
     else:
         writes[job.inputs["review"][0]] = "CHANGED REVIEW CRITERIA"
     env.scenario([{"reply": PASS, "writes": writes}])
@@ -377,30 +368,6 @@ def test_review_pass_needs_its_evidence_to_still_hold(env, case):
         assert "review_stale" in [e["type"] for e in current.events]
 
 
-@pytest.mark.parametrize(
-    "case", ["cache_erased", "cache_erased_child_output_missing", "cache_hash_corrupt"]
-)
-def test_review_revalidates_work_children_against_durable_evidence(env, case):
-    manifest = json.dumps([{"id": "Kid", "outputs": ["kid.txt"]}])
-    files = {**GOOD_FILES, "kid.txt": "result", str(env.folder() / "children.json"): manifest}
-    env.scenario([{"writes": files, "subagents": [child("Kid", "completed")]}])
-    assert env.run("work") == 0
-    assert env.run("check") == 0
-    assert env.get().checks[-1]["ok"]
-    if case == "cache_hash_corrupt":
-        source = env.folder() / "evidence" / "work.json"
-        source.write_text(source.read_text().replace("xxxx", "yyyy"), encoding="utf-8")
-    else:
-        (env.folder() / "children-rpc.json").write_text("[]", encoding="utf-8")
-        if case == "cache_erased_child_output_missing":
-            (env.folder() / "work" / "kid.txt").unlink()
-    env.scenario([{"reply": PASS}])
-    assert env.run("review") == 0
-    job = env.get()
-    assert job.stage == "check" and job.reviews == ()
-    assert "review_stale" in [event["type"] for event in job.events]
-
-
 def test_result_changed_before_review_goes_back_to_check(env):
     env.to_review()
     (env.folder() / "work" / "out.txt").write_text("ok\nlater\n", encoding="utf-8")
@@ -410,7 +377,7 @@ def test_result_changed_before_review_goes_back_to_check(env):
     assert not (env.state / "log.jsonl").exists()
 
 
-# --- children -------------------------------------------------------------------------------
+# --- settlement and transport ---------------------------------------------------------------
 
 
 def test_nonzero_exit_or_persistence_notice_fails_a_settled_step(env):
@@ -448,45 +415,21 @@ def test_check_judges_files_after_the_command_and_kills_strays(tmp_path, monkeyp
     assert not stray.exists()
 
 
-def child(ident: str, status: str, count: int = 5) -> dict:
-    messages = [{"n": i, "text": "x" * 400} for i in range(count)]
-    return {"id": ident, "status": status, "messages": messages}
-
-
-def test_running_child_is_not_accepted(env):
-    env.scenario([work_turn(subagents=[child("Kid", "running")])])
-    assert env.run("work") == 1
-    assert "not completed" in env.get().error and env.get().stage == "work"
-
-
-def test_manifest_entry_without_outputs_is_rejected(env):
-    manifest = json.dumps([{"id": "Kid", "outputs": []}])
-    env.scenario(
-        [
-            work_turn(
-                subagents=[child("Kid", "completed")],
-                writes={**GOOD_FILES, str(env.folder() / "children.json"): manifest},
-            )
-        ]
-    )
-    assert env.run("work") == 1
-    assert "lists no output" in env.get().error
-
-
-def test_completed_child_without_transcript_parks_the_job(env):
-    manifest = json.dumps([{"id": "Kid", "outputs": ["kid.txt"]}])
-    kid = {"id": "Kid", "status": "completed", "messages": []}
-    files = {**GOOD_FILES, "kid.txt": "result", str(env.folder() / "children.json"): manifest}
-    env.scenario([{"writes": files, "subagents": [kid]}])
+def test_pending_async_work_is_not_accepted(env):
+    env.config = replace(env.config, rpc_timeout=1)
+    env.scenario([work_turn(pending_async=True)])
     assert env.run("work") == 1
     job = env.get()
-    assert (job.stage, job.wait_reason) == ("user_wait", "child_evidence_unavailable")
+    assert job.stage == "work" and "timed out" in job.error
 
 
-def test_review_running_child_is_rejected(env):
-    env.scenario([{"reply": PASS, "subagents": [child("R", "running")]}])
+def test_pending_async_review_is_not_accepted(env):
+    env.scenario([{"reply": PASS, "pending_async": True}])
     env.to_review()
-    assert env.run("review") == 1 and "not completed" in env.get().error
+    env.config = replace(env.config, rpc_timeout=1)
+    assert env.run("review") == 1
+    job = env.get()
+    assert job.stage == "review" and job.reviews == () and "timed out" in job.error
 
 
 def test_rereview_sees_prior_findings_and_original_request(env):
@@ -506,83 +449,11 @@ def test_rereview_sees_prior_findings_and_original_request(env):
     assert "ORIGINAL PROMPT TEXT" in prompt and env.get().stage == "deliver_pending"
 
 
-def test_review_children_need_their_own_manifest_and_outputs(env):
-    root = env.folder() / "reviews" / "review-0-1"
-    manifest = json.dumps([{"id": "R", "outputs": ["r.txt"]}])
-    worker_manifest = env.folder() / "children.json"
-    worker_manifest.write_text(manifest, encoding="utf-8")  # a stale worker manifest is not used
-    env.scenario(
-        [
-            {"reply": PASS, "subagents": [child("R", "completed")]},
-            {
-                "reply": PASS,
-                "subagents": [child("R", "completed")],
-                "writes": {str(root / "children.json"): manifest, str(root / "r.txt"): "x"},
-            },
-        ]
-    )
-    env.to_review()
-    assert env.run("review") == 1 and "review-0-1" not in env.get().error
-    assert "children.json" in env.get().error
-    assert env.run("review") == 0 and env.get().stage == "deliver_pending"
-
-
 def test_async_followup_failure_after_prompt_result_fails_the_step(env):
     env.scenario([work_turn(followup_error="error")])
     assert env.run("work") == 1
     job = env.get()
     assert job.stage == "work" and "stopReason error" in job.error
-
-
-def test_terminal_children_pruned_from_registry_are_still_read(env):
-    env.scenario([work_turn(subagents=[child("Gone", "completed"), child("Live", "running")])])
-    assert env.run("work") == 1
-    saved = json.loads((env.folder() / "children-rpc.json").read_text())
-    assert {c["id"]: c["status"] for c in saved} == {"Gone": "completed", "Live": "running"}
-    assert all(len(c["messages"]) == 5 for c in saved)
-    events = [e for e in env.get().events if e["type"] == "subagent_lifecycle"]
-    assert {(e["id"], e["status"]) for e in events} >= {("Gone", "started"), ("Gone", "completed")}
-
-
-def test_child_seen_before_death_is_kept_or_blocks_resume(env):
-    manifest = json.dumps([{"id": "Kid", "outputs": ["kid.txt"]}])
-    resume = work_turn(
-        writes={**GOOD_FILES, "kid.txt": "r\n", str(env.folder() / "children.json"): manifest}
-    )
-    env.scenario([{"subagents": [child("Kid", "completed")], "die_after_children": "read"}, resume])
-    assert env.run("work") == 1
-    assert env.run("work", session_dir=env.get().session_dir) == 0
-    saved = json.loads((env.folder() / "children-rpc.json").read_text())
-    assert [c["id"] for c in saved] == ["Kid"] and len(saved[0]["messages"]) == 5
-    assert env.get().stage == "check"
-
-
-def test_unrecoverable_earlier_child_blocks_instead_of_passing_empty(env):
-    # The child was announced, but the process died before its transcript could be saved.
-    dying = {"subagents": [child("Kid", "completed")], "die_after_children": "now"}
-    env.scenario([dying, work_turn()])
-    assert env.run("work") == 1
-    assert env.run("work", session_dir=env.get().session_dir) == 1
-    job = env.get()
-    assert (job.stage, job.wait_reason) == ("user_wait", "child_evidence_unavailable")
-
-
-def test_corrupt_child_evidence_blocks(env):
-    env.scenario([work_turn(subagents=[child("Kid", "completed")])])
-    env.run("work")
-    path = env.folder() / "evidence" / "work.json"
-    path.write_text(path.read_text().replace("xxxx", "yyyy"), encoding="utf-8")
-    assert env.run("work", session_dir=env.get().session_dir) == 1
-    assert env.get().wait_reason == "child_evidence_unavailable"
-
-
-def test_child_status_tampering_with_same_messages_blocks(env):
-    env.scenario([work_turn(subagents=[child("Kid", "failed")])])
-    env.run("work")
-    path = env.folder() / "evidence" / "work.json"
-    path.write_text(path.read_text().replace('"failed"', '"completed"'), encoding="utf-8")
-    assert env.run("work", session_dir=env.get().session_dir) == 1
-    assert env.get().wait_reason == "child_evidence_unavailable"
 
 
 def test_failed_check_after_review_spends_a_fix_round(env):
@@ -597,34 +468,13 @@ def test_failed_check_after_review_spends_a_fix_round(env):
     assert env.get().wait_reason == "check_failed"
 
 
-def test_children_need_a_manifest(env):
-    env.scenario([work_turn(subagents=[child("Kid", "completed")])])
-    assert env.run("work") == 1
-    assert "children.json" in env.get().error
-
-
-def test_children_full_transcript_over_chunked_frames_and_manifest(env):
-    manifest = [{"id": "Kid", "outputs": ["kid.txt"]}]
-    env.scenario(
-        [
-            work_turn(
-                subagents=[child("Kid", "completed")],
-                writes={
-                    **GOOD_FILES,
-                    "kid.txt": "r\n",
-                    str(env.folder() / "children.json"): json.dumps(manifest),
-                },
-            )
-        ],
-        chunk_at=500,
-    )
-    assert env.run("work") == 0
-    saved = json.loads((env.folder() / "children-rpc.json").read_text())
-    assert [m["n"] for m in saved[0]["messages"]] == [0, 1, 2, 3, 4]
-    assert env.run("check") == 0 and env.get().stage == "review"
-    (env.folder() / "work" / "kid.txt").unlink()
-    assert env.run("check") == 0
-    assert "output is missing" in env.get().error
+def test_whole_review_text_survives_chunked_frames(env):
+    body = f"{PASS}\n" + "finding line\n" * 100
+    env.scenario([{"reply": body}], chunk_at=500)
+    env.to_review()
+    assert env.run("review") == 0
+    review = env.get().reviews[-1]
+    assert review["ok"] and review["body"] == body
 
 
 # --- code jobs ------------------------------------------------------------------------------

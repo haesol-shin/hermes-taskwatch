@@ -24,7 +24,7 @@ from .checks import checklist_problems
 from .evidence import basis_of
 from .executor import _verdict_line
 from .fingerprint import FingerprintError, files_fingerprint, head_sha, uncommitted_changes
-from .job_rpc import MissingTranscript, RpcAborted, RpcClient, RpcError
+from .job_rpc import RpcAborted, RpcClient, RpcError
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobConfig, Jobs, JobState, progress_fingerprint
 
 STEPS = frozenset({"work", "fix", "check", "review"})
@@ -66,10 +66,6 @@ class InputsChanged(StepError):
     """A copied input or review profile no longer matches its recorded hash."""
 
 
-class ChildEvidenceLost(StepError):
-    """A child seen by an earlier attempt cannot be accounted for. Resuming is not safe."""
-
-
 class StaleAttempt(Exception):
     """The job moved on. This process must stop without writing."""
 
@@ -104,8 +100,6 @@ def run_job(jobs: Jobs, config: JobConfig, job_id: str, attempt: int) -> int:
         return 2
     except InputsChanged as exc:
         return _stop(jobs, job, "inputs_invalid", str(exc))
-    except ChildEvidenceLost as exc:
-        return _stop(jobs, job, "child_evidence_unavailable", str(exc))
     except (RpcError, StepError, OSError, ValueError, subprocess.SubprocessError) as exc:
         return _fail(jobs, job, str(exc) or type(exc).__name__)
 
@@ -165,20 +159,7 @@ def _context(jobs: Jobs, config: JobConfig, job: JobState) -> Ctx:
     recorded = job.guideline_hashes
     if recorded is not None and recorded != hashes:
         raise InputsChanged("a copied review profile does not match its recorded hash")
-    prepared = {
-        "type": "prepared",
-        "workspace": str(workspace),
-        "guideline_hashes": hashes,
-        "workflow_sha256": _file_sha(folder / "WORKFLOW.md"),
-    }
-    _apply(
-        ctx,
-        lambda j: {
-            "workspace": str(workspace),
-            "guideline_hashes": hashes,
-            "events": _event(j, **prepared),
-        },
-    )
+    _apply(ctx, lambda j: {"workspace": str(workspace), "guideline_hashes": hashes})
     return ctx
 
 
@@ -301,9 +282,7 @@ Work inputs:
   Set `passes` to true only when the evidence for that item exists.
 - Code jobs: commit everything in the workspace, including the progress and checklist files.
   The checks accept only a clean, committed result.
-- If you delegate to subagents, wait until each one finished, and list each one in
-  {ctx.folder / "children.json"} as
-  [{{"id": "<subagent id>", "outputs": ["<relative result path>"]}}].
+- If you delegate to subagents, wait until each one finished.
 
 {_approval_text(ctx)}
 
@@ -373,10 +352,7 @@ def _review_message(
         f"Reviewed result: {ctx.workspace} (files: {', '.join(job.outputs)})",
         f"Result fingerprint: {job.fingerprint}",
         f"Check output: {log}",
-        "If you delegate to subagents, wait until each one finished. Each must write its result",
-        f"under {review_root}, and you list them in {review_root / 'children.json'} as",
-        '[{"id": "<subagent id>", "outputs": ["<path relative to that folder>"]}].',
-        "This manifest is separate from the work manifest. Every subagent needs a nonempty list.",
+        "If you delegate to subagents, wait until each one finished.",
         "",
         "Original request, in full:",
         job.prompt,
@@ -408,19 +384,11 @@ def _review_message(
 # --- RPC session ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class Turn:
-    resumed: bool
-    children: list
-    text: str
-
-
 class Recorder:
     """Writes evidence from RPC frames. A refused write means the attempt is stale."""
 
-    def __init__(self, ctx: Ctx, session_dir: Path) -> None:
+    def __init__(self, ctx: Ctx) -> None:
         self.ctx = ctx
-        self.session_dir = str(session_dir)
         self.abort = threading.Event()
         self.done = threading.Event()
         self._last = time.monotonic()
@@ -443,8 +411,6 @@ class Recorder:
         if kind in _EVENTS:
             source = frame.get("payload") if isinstance(frame.get("payload"), dict) else frame
             summary = {k: source[k] for k in _EVENT_FIELDS if k in source}
-            if kind == "subagent_lifecycle":
-                summary["session_dir"] = self.session_dir
             self._write({"type": kind, **summary})
         elif kind in _PROGRESS_FRAMES and now - self._last >= EVIDENCE_EVERY:
             self._write(None)
@@ -466,123 +432,9 @@ class Recorder:
             self.abort.set()
 
 
-class ChildStore:
-    """Durable per-session child evidence, merged across attempts.
-
-    A new omp process has an empty registry, so what an earlier attempt saw is read from this
-    file. It is written from the main thread while the process lives, never from the reader.
-    """
-
-    def __init__(self, ctx: Ctx, session_dir: Path) -> None:
-        self.ctx = ctx
-        self.session_dir = str(session_dir)
-        self.path = ctx.folder / "evidence" / f"{session_dir.name}.json"
-        self._version = 0
-        self.loaded = self._load()
-
-    def _load(self) -> dict[str, dict]:
-        if not self.path.exists():
-            return {}
-        try:
-            envelope = json.loads(self.path.read_text(encoding="utf-8"))
-            rows = envelope["children"]
-            if envelope["version"] != 1 or envelope["sha256"] != _digest(rows):
-                raise ValueError("child evidence does not match its hash")
-            for key, row in rows.items():
-                if not (
-                    isinstance(key, str)
-                    and isinstance(row["id"], str)
-                    and isinstance(row["status"], str)
-                    and isinstance(row["messages"], list)
-                ):
-                    raise ValueError("child evidence has an invalid record")
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise ChildEvidenceLost(f"saved child evidence is unreadable: {exc}") from exc
-        return rows
-
-    @staticmethod
-    def _key(child: dict) -> str:
-        return f"{child.get('id')}\0{child.get('sessionFile') or ''}"
-
-    def _save(self, merged: dict[str, dict]) -> None:
-        self.path.parent.mkdir(exist_ok=True)
-        temp = self.path.with_name(self.path.name + ".tmp")
-        envelope = {"version": 1, "sha256": _digest(merged), "children": merged}
-        _write_durable(temp, json.dumps(envelope))
-        os.replace(temp, self.path)
-        fd = os.open(self.path.parent, os.O_RDONLY)
-        try:
-            os.fsync(fd)  # the rename itself must survive a crash
-        finally:
-            os.close(fd)
-
-    def _merge(self, fresh: list[dict]) -> dict[str, dict]:
-        merged = dict(self.loaded)
-        for child in fresh:
-            merged[self._key(child)] = dict(child)
-        return merged
-
-    def tick(self, client: RpcClient) -> None:
-        if client.lifecycle_version == self._version:
-            return
-        self._version = client.lifecycle_version
-        try:
-            fresh = client.children(float(self.ctx.config.rpc_timeout), self.loaded)
-        except RpcAborted:
-            raise
-        except RpcError:
-            self._version = -1  # settle() reads again and fails the step if it still cannot
-            return
-        self.loaded = self._merge(fresh)
-        self._save(self.loaded)
-
-    def settle(self, client: RpcClient, timeout: float) -> list[dict]:
-        try:
-            fresh = client.children(timeout, self.loaded)
-        except MissingTranscript as exc:
-            raise ChildEvidenceLost(str(exc)) from exc
-        seen = {self._key(c) for c in fresh}
-        merged = self._merge(fresh)
-        self.loaded = merged
-        self._save(merged)
-        self.validate(merged, seen)
-        return list(merged.values())
-
-    def validate(self, merged: dict[str, dict], seen: set[str]) -> None:
-        job = self.ctx.jobs.load().get(self.ctx.job.id) or self.ctx.job
-        files: dict[str, set[str]] = {}
-        for event in job.events:
-            if event.get("type") == "subagent_lifecycle" and event.get("session_dir") == (
-                self.session_dir
-            ):
-                files.setdefault(str(event.get("id")), set()).add(event.get("sessionFile") or "")
-        lost = sorted(
-            ident
-            for ident, names in files.items()
-            if not any(
-                key.split("\0")[0] == ident and (not names - {""} or key.split("\0")[1] in names)
-                for key in merged
-            )
-        )
-        stale = sorted(
-            row.get("id", "?")
-            for key, row in merged.items()
-            if key not in seen and row.get("status") not in {"completed", "failed", "aborted"}
-        )
-        if lost or stale:
-            raise ChildEvidenceLost(
-                "earlier subagents cannot be accounted for: " + ", ".join(lost + stale)
-            )
-
-
-def _digest(value: object) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
-
-
-def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text: bool) -> Turn:
+def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text: bool) -> str:
     timeout = float(ctx.config.rpc_timeout)
-    recorder = Recorder(ctx, session_dir)
-    store = ChildStore(ctx, session_dir)
+    recorder = Recorder(ctx)
     argv = [*ctx.config.omp_command, "--mode", "rpc", "--no-ui"]
     stderr = ctx.folder / "logs" / f"omp-a{ctx.job.attempt}.stderr"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -596,7 +448,6 @@ def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text:
             stderr_path=stderr,
             abort=recorder.abort,
             poll=SETTLE_POLL,
-            on_tick=store.tick,
         ) as client:
             client.start(timeout)
             opened = client.open_session(session_dir, timeout)
@@ -610,24 +461,18 @@ def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text:
                     "events": _event(j, type="session_open", resumed=resumed),
                 },
             )
-            client.request("set_subagent_subscription", timeout, level="progress")
             client.prompt_and_wait(message(resumed), timeout)
-            children = store.settle(client, timeout)
             reply = client.last_assistant_text(timeout) if text else ""
             client.finish()
     finally:
         recorder.done.set()
     if recorder.abort.is_set():
         raise StaleAttempt
-    return Turn(resumed, children, reply)
+    return reply
 
 
 def _agent_step(ctx: Ctx) -> int:
-    turn = _converse(ctx, ctx.folder / "sessions" / "work", lambda r: _agent_message(ctx, r), False)
-    (ctx.folder / "children-rpc.json").write_text(json.dumps(turn.children), encoding="utf-8")
-    problems = _child_problems(ctx)
-    if problems:
-        raise StepError("; ".join(problems))
+    _converse(ctx, ctx.folder / "sessions" / "work", lambda r: _agent_message(ctx, r), False)
     stage = ctx.stage
 
     def build(job: JobState) -> dict:
@@ -645,77 +490,11 @@ def _agent_step(ctx: Ctx) -> int:
     return 0
 
 
-# --- children ------------------------------------------------------------------------------
-
-
 def _inside(workspace: Path, relative: str) -> Path | None:
     path = (workspace / relative).resolve()
     if Path(relative).is_absolute() or not path.is_relative_to(workspace.resolve()):
         return None
     return path
-
-
-def _unfinished(children: list) -> list[str]:
-    return [
-        f"subagent {c.get('id')} is {c.get('status')}, not completed"
-        for c in children
-        if c.get("status") != "completed"
-    ]
-
-
-def _child_problems(ctx: Ctx) -> list[str]:
-    """Bind the work registry to durable evidence before checking its outputs."""
-    try:
-        children = json.loads((ctx.folder / "children-rpc.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ["the subagent list of the session was not saved"]
-    try:
-        store = ChildStore(ctx, ctx.folder / "sessions" / "work")
-        store.validate(store.loaded, set(store.loaded))
-    except ChildEvidenceLost as exc:
-        return [str(exc)]
-    if not isinstance(children, list) or children != list(store.loaded.values()):
-        return ["the saved subagent list does not match durable child evidence"]
-    return _accept_children(children, ctx.folder / "children.json", ctx.workspace)
-
-
-def _accept_children(children: list, manifest_path: Path, root: Path) -> list[str]:
-    """Accept subagents only when every one finished and left what the manifest names."""
-    if not isinstance(children, list) or not all(isinstance(c, dict) for c in children):
-        return ["the saved subagent list is malformed"]
-    if not children:
-        return []
-    problems = _unfinished(children)
-    problems += [
-        f"subagent {c.get('id')} has no transcript evidence"
-        for c in children
-        if not isinstance(c.get("messages"), list) or not c["messages"]
-    ]
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return [*problems, f"subagents ran but {manifest_path.name} is missing or not JSON"]
-    return [*problems, *_manifest_problems(manifest, children, root)]
-
-
-def _manifest_problems(manifest: object, children: list, workspace: Path) -> list[str]:
-    if not isinstance(manifest, list) or not all(
-        isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("outputs"), list)
-        for m in manifest
-    ):
-        return ["children.json must be a list of {id, outputs}"]
-    known = {c.get("id") for c in children}
-    listed = {m["id"] for m in manifest}
-    problems = [f"children.json names unknown subagent {i}" for i in sorted(listed - known)]
-    problems += [f"subagent {i} is not in children.json" for i in sorted(known - listed)]
-    for item in manifest:
-        if not item["outputs"]:
-            problems.append(f"subagent {item['id']} lists no output")
-        for rel in item["outputs"]:
-            path = _inside(workspace, rel) if isinstance(rel, str) else None
-            if path is None or not path.is_file():
-                problems.append(f"subagent {item['id']} output is missing: {rel}")
-    return problems
 
 
 # --- progress, fingerprint, check ----------------------------------------------------------
@@ -805,7 +584,6 @@ def _check_step(ctx: Ctx) -> int:
     run, problems = _run_command(ctx, seq)
     # After the command: it may have changed or removed what the checks require.
     problems += _file_problems(job, ctx.workspace)
-    problems += _child_problems(ctx)
     fingerprint = basis = ""
     try:
         fingerprint = _fingerprint(job, ctx.workspace)
@@ -881,15 +659,12 @@ def _review_step(ctx: Ctx) -> int:
     name = f"review-{len(job.reviews)}-{len(job.checks)}"
     review_root = ctx.folder / "reviews" / name
     review_root.mkdir(parents=True, exist_ok=True)
-    turn = _converse(
+    text = _converse(
         ctx,
         ctx.folder / "sessions" / name,
         lambda r: _review_message(ctx, guidelines, r, review_root),
         True,
     )
-    problems = _accept_children(turn.children, review_root / "children.json", review_root)
-    if problems:
-        raise StepError("; ".join(problems))
     try:
         ctx.jobs.verify_inputs(job)
     except (ValueError, OSError) as exc:
@@ -899,11 +674,7 @@ def _review_step(ctx: Ctx) -> int:
         # The reviewer saw evidence that no longer holds, so its verdict is not accepted.
         _apply(ctx, lambda j: {**_requeue_check(j), "error": "; ".join(problems)})
         return 0
-    record = _judge(ctx, turn.text)
-    record["children"] = [c.get("id") for c in turn.children]
-    (ctx.folder / "reviews" / f"children-{record['seq']}.json").write_text(
-        json.dumps(turn.children), encoding="utf-8"
-    )
+    record = _judge(ctx, text)
     _apply(ctx, lambda j: _review_route(j, record))
     return 0
 
@@ -925,7 +696,7 @@ def _evidence_problems(ctx: Ctx) -> list[str]:
             return ["the check log does not match its recorded hash"]
     except OSError as exc:
         return [f"the check log is unreadable: {exc}"]
-    return [*_file_problems(job, ctx.workspace), *_child_problems(ctx)]
+    return _file_problems(job, ctx.workspace)
 
 
 def _requeue_check(job: JobState) -> dict:
@@ -944,10 +715,7 @@ def _requeue_check(job: JobState) -> dict:
 
 def _judge(ctx: Ctx, body: str) -> dict:
     job = ctx.job
-    folder = ctx.folder / "reviews"
-    folder.mkdir(exist_ok=True)
     seq = len(job.checks) + len(job.reviews) + 1
-    (folder / f"review-{seq}.md").write_text(body, encoding="utf-8")
     record = {
         "seq": seq,
         "at": _now(),
@@ -958,7 +726,6 @@ def _judge(ctx: Ctx, body: str) -> dict:
         "fingerprint": job.fingerprint,
         "basis": job.basis,
         "body": body,
-        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "session_path": ctx.jobs.load()[job.id].session_path,
         "problems": [],
     }

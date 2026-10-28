@@ -7,8 +7,7 @@ records every command received so a test can assert what the runner sent.
 A turn runs when a prompt arrives (the Nth prompt over all processes takes turn N):
   writes: {path: text}      files written relative to the working directory
   run: [argv, ...]          commands run in the working directory
-  subagents: [{id, status, messages}]  lifecycle frames; only running ones stay listed
-  die_after_children: "read" exits once a child transcript was fully read; "now" at once
+  pending_async: true       the session never settles and reports pending async work
   followup_error: stopReason of an async follow-up run that ends after prompt_result
   reply: str                the final assistant text
   die: true                 exit after agent_start, before the session has any content
@@ -38,10 +37,9 @@ protocol = 1
 chunks = 0
 session_file: Path | None = None
 settled = True
+pending = False
 reply = ""
-subagents: list[dict] = []
 LOCK = threading.RLock()  # one frame, or one chunk sequence, at a time
-children_read = threading.Event()
 turns: list[threading.Thread] = []
 
 
@@ -131,7 +129,7 @@ def record_prompt(message: str) -> None:
 
 
 def prompt(cmd: dict) -> None:
-    global settled, reply
+    global settled, reply, pending
     turn = next_turn()
     settled = False
     respond(cmd, {})
@@ -148,19 +146,7 @@ def prompt(cmd: dict) -> None:
         path.write_text(text, encoding="utf-8")
     for argv in turn.get("run", []):
         subprocess.run(argv, check=True, capture_output=True)
-    for child in turn.get("subagents", []):
-        subagents.append(child)
-        payload = {"id": child["id"], "agent": "task", "index": 0, "sessionFile": "child.jsonl"}
-        emit({"type": "subagent_lifecycle", "payload": {**payload, "status": "started"}})
-        if child["status"] != "running":
-            emit({"type": "subagent_lifecycle", "payload": {**payload, "status": child["status"]}})
-    after = turn.get("die_after_children")
-    if after == "read":
-        # Die only once the client has read a child transcript: no timing involved.
-        children_read.wait(10)
-        os._exit(3)
-    if after == "now":
-        os._exit(3)
+    pending = bool(turn.get("pending_async"))
     reply = turn.get("reply", "")
     if turn.get("notice"):
         emit({"type": "notice", "level": "error", "source": "session-persistence", "message": "x"})
@@ -187,29 +173,9 @@ def prompt(cmd: dict) -> None:
         message = {"role": "assistant", "stopReason": followup, "content": []}
         emit({"type": "message_end", "message": message})
         emit({"type": "agent_end", "messages": [message], "isTerminal": True, "yielded": True})
-    if not turn.get("no_settle"):
+    if not (turn.get("no_settle") or pending):
         settled = True
         emit({"type": "session_settled"})
-
-
-def subagent_messages(cmd: dict) -> None:
-    child = next((c for c in subagents if c["id"] == cmd.get("subagentId")), None)
-    offset = int(cmd.get("fromByte", 0))
-    messages = child["messages"] if child else []
-    page = messages[offset : offset + 2]
-    respond(
-        cmd,
-        {
-            "sessionFile": "",
-            "fromByte": offset,
-            "nextByte": offset + len(page),
-            "reset": False,
-            "entries": page,
-            "messages": page,
-        },
-    )
-    if child and offset >= len(messages):
-        children_read.set()
 
 
 def handle(cmd: dict) -> None:
@@ -221,25 +187,13 @@ def handle(cmd: dict) -> None:
         respond(cmd, {"protocolVersion": protocol})
     elif kind == "open_session":
         open_session(cmd)
-    elif kind == "set_subagent_subscription":
-        respond(cmd, {"level": cmd["level"]})
     elif kind == "get_state":
-        respond(cmd, {"isSettled": settled, "hasPendingAsyncWork": False})
+        respond(cmd, {"isSettled": settled, "hasPendingAsyncWork": pending})
     elif kind == "prompt":
         # A real session keeps serving commands while a turn runs.
         thread = threading.Thread(target=prompt, args=(cmd,))
         turns.append(thread)
         thread.start()
-    elif kind == "get_subagents":
-        # Terminal subagents are pruned from the registry; their transcripts stay selectable.
-        listed = [
-            {k: v for k, v in c.items() if k != "messages"}
-            for c in subagents
-            if c["status"] == "running"
-        ]
-        respond(cmd, {"subagents": listed})
-    elif kind == "get_subagent_messages":
-        subagent_messages(cmd)
     elif kind == "get_last_assistant_text":
         respond(cmd, {"text": reply})
     elif kind == "abort":

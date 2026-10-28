@@ -11,14 +11,11 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 DEFAULT_FRAME_BYTES = 1 << 20
 DEFAULT_REASSEMBLED_BYTES = 64 << 20
-_MAX_SUBAGENT_PAGES = 100_000
-_TERMINAL = frozenset({"completed", "failed", "aborted"})
-TICK_EVERY = 0.2
 
 
 class RpcError(Exception):
@@ -27,10 +24,6 @@ class RpcError(Exception):
 
 class RpcTimeout(RpcError):
     pass
-
-
-class MissingTranscript(RpcError):
-    """A completed subagent has no readable transcript, so its work cannot be judged."""
 
 
 class RpcAborted(RpcError):
@@ -124,12 +117,7 @@ class RpcClient:
         stderr_path: Path | None = None,
         abort: threading.Event | None = None,
         poll: float = 2.0,
-        tick_every: float = TICK_EVERY,
-        on_tick: Callable[["RpcClient"], None] | None = None,
     ) -> None:
-        self.on_tick = on_tick
-        self.tick_every = tick_every
-        self.lifecycle_version = 0
         self.argv = list(argv)
         self.cwd = cwd
         self.on_frame = on_frame
@@ -152,8 +140,6 @@ class RpcClient:
         self._counter = 0
         self._decoder = FrameDecoder()
         self._exit: int | None = None
-        self._lifecycle: dict[str, dict] = {}
-        self._child_refresh: dict[str, int] = {}
         self._last_stop: object = None
         self._yield_stop: object = None
 
@@ -227,8 +213,6 @@ class RpcClient:
                 self._results[frame["id"]] = frame
             elif kind == "agent_start":
                 self._agent_starts += 1
-            elif kind == "subagent_lifecycle":
-                self._note_lifecycle(frame.get("payload"))
             elif kind == "message_end":
                 self._note_message(frame.get("message"))
             elif kind == "agent_end":
@@ -246,14 +230,6 @@ class RpcClient:
                 with self._cv:
                     self._failure = self._failure or RpcError(f"frame handler failed: {exc}")
                     self._cv.notify_all()
-
-    def _note_lifecycle(self, payload: object) -> None:
-        # get_subagents drops a subagent at its terminal frame, so every one seen is kept.
-        if isinstance(payload, dict) and isinstance(payload.get("id"), str):
-            self._lifecycle[payload["id"]] = {**self._lifecycle.get(payload["id"], {}), **payload}
-            self.lifecycle_version += 1
-            if payload.get("status") == "started":
-                self._child_refresh[payload["id"]] = self.lifecycle_version
 
     def _note_message(self, message: object) -> None:
         if isinstance(message, dict) and message.get("role") == "assistant":
@@ -335,7 +311,7 @@ class RpcClient:
             data = ack.get("data")
             if isinstance(data, dict) and data.get("agentInvoked") is False:
                 raise RpcError("the prompt finished without an agent turn")
-            result = self._wait_polled(lambda: self._results.pop(ident, None), deadline, "result")
+            result = self._wait(lambda: self._results.pop(ident, None), _left(deadline), "result")
             _accept_result(result)
             with self._cv:
                 if self._agent_starts <= starts:
@@ -350,20 +326,6 @@ class RpcClient:
             raise
         return result
 
-    def _wait_polled(self, predicate, deadline: float, what: str):
-        """Wait in slices; between slices the caller's tick runs on this thread, not the reader."""
-        while True:
-            try:
-                return self._wait(predicate, min(self.tick_every, _left(deadline)), what)
-            except RpcTimeout:
-                if time.monotonic() >= deadline:
-                    raise
-            self._tick()
-
-    def _tick(self) -> None:
-        if self.on_tick is not None:
-            self.on_tick(self)
-
     def _wait_settled(self, deadline: float, seen: int) -> None:
         while True:
             left = _left(deadline)
@@ -373,7 +335,6 @@ class RpcClient:
             with self._cv:
                 if self._settled > seen and state.get("isSettled") is not False:
                     return
-            self._tick()
             try:
                 self._wait(lambda: self._settled > seen, min(self.poll, _left(deadline)), "settle")
             except RpcTimeout:
@@ -389,79 +350,6 @@ class RpcClient:
     def last_assistant_text(self, timeout: float) -> str:
         text = self.request("get_last_assistant_text", timeout).get("text")
         return text if isinstance(text, str) else ""
-
-    def children(self, timeout: float, cached: Mapping[str, dict] | None = None) -> list[dict]:
-        """Every subagent seen or listed, each with its complete transcript.
-
-        Terminal subagents leave get_subagents, so lifecycle frames are merged with the live
-        registry. Saved terminal transcripts do not depend on continued server retention.
-        `cached` maps f"{id}\\0{sessionFile or ''}" to the caller's saved record: a terminal one
-        with a transcript keeps it unless a new started event requires collection again.
-        A completed child whose transcript was never collected is missing evidence.
-        """
-        listed = self.request("get_subagents", timeout).get("subagents")
-        if not isinstance(listed, list):
-            raise RpcError("get_subagents returned no list")
-        with self._cv:
-            merged = {k: dict(v) for k, v in self._lifecycle.items()}
-        for child in listed:
-            if not isinstance(child, dict) or not isinstance(child.get("id"), str):
-                raise RpcError("a subagent has no id")
-            merged[child["id"]] = {**merged.get(child["id"], {}), **child}
-        for child in merged.values():
-            if child.get("status") == "started":
-                child["status"] = "running"
-        return [self._collect(child, cached or {}, timeout) for child in merged.values()]
-
-    def _collect(self, child: dict, cached: Mapping[str, dict], timeout: float) -> dict:
-        old = cached.get(f"{child.get('id')}\0{child.get('sessionFile') or ''}")
-        with self._cv:
-            refresh = self._child_refresh.get(child["id"])
-        if (
-            old is not None
-            and refresh is None
-            and old.get("status") in _TERMINAL
-            and child.get("status") in _TERMINAL
-            and isinstance(old.get("messages"), list)
-            and old["messages"]
-        ):
-            return {**child, "messages": old["messages"]}
-        try:
-            messages = self._messages(child, timeout)
-        except RpcAborted:
-            raise
-        except RpcError as exc:
-            raise MissingTranscript(
-                f"the transcript of subagent {child.get('id')} is unavailable: {exc}"
-            ) from exc
-        if not messages and child.get("status") == "completed":
-            raise MissingTranscript(f"the transcript of subagent {child.get('id')} is missing")
-        if child.get("status") in _TERMINAL:
-            # A start received during collection must still invalidate the next cache read.
-            with self._cv:
-                if self._child_refresh.get(child["id"]) == refresh:
-                    self._child_refresh.pop(child["id"], None)
-        return {**child, "messages": messages}
-
-    def _messages(self, child: dict, timeout: float) -> list:
-        ident = child.get("id")
-        if not isinstance(ident, str):
-            raise RpcError("a subagent has no id")
-        messages: list = []
-        offset = 0
-        for _ in range(_MAX_SUBAGENT_PAGES):
-            page = self.request("get_subagent_messages", timeout, subagentId=ident, fromByte=offset)
-            if page.get("reset"):
-                messages, offset = [], 0
-            part = page.get("messages")
-            nxt = page.get("nextByte")
-            if not isinstance(part, list) or type(nxt) is not int:
-                raise RpcError("get_subagent_messages returned a malformed page")
-            messages.extend(part)
-            if nxt <= offset:
-                return messages
-            offset = nxt
-        raise RpcError("a subagent transcript did not end")
 
     def close(self, kill: bool = False) -> int | None:
         proc = self._proc

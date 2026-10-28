@@ -29,6 +29,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Changed
 
+- Standalone job acceptance uses taskwatch's own checks and settled public RPC state, without child transcript caches or manifests.
 - The plugin no longer changes environment variables, reads Hermes source, or writes the board database directly; profile and paths come from the plugin context and Hermes helpers.
 - Generated timer units pin the configured profile with `-p`, and the apply example requires `HERMES_PROFILE`.
 - `plugin.yaml` declares `taskwatch_approve`.
@@ -36,8 +37,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Fixed
 
-- Bind work-child review acceptance to checksummed evidence and recorded identities, and refresh terminal transcripts after same-session follow-up starts.
-- Revalidate standalone review evidence, reject missing child transcripts and interrupted RPC chunks, preserve collected child transcripts, bound resumed review fixes, and isolate unreadable job progress.
+- Revalidate standalone review evidence, reject interrupted RPC chunks, bound resumed review fixes, and isolate unreadable job progress.
 - Clarify safe plugin updates, default-profile timer pinning, production destinations, review executor responsibility, and user escalation; consolidate operational guidance.
 - The enabled dispatch watch hook reports unreadable board evidence through the same user notification path as `scan`, without leaking the read error.
 - P0 is only a rule break about runtime behavior or data. Style and wording are P2.

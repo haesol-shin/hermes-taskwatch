@@ -79,25 +79,18 @@ The gate covers agent tool calls only. A person running `hermes kanban complete`
 The standalone runner uses the same checklist and review verdict contracts without
 opening a Hermes board. The check service runs the approved `check_command` in the
 job workspace and records its exit code and complete combined output. It then
-verifies required outputs, progress, checklist, and accepted child results.
+verifies required outputs, progress, and checklist.
 A model's PASS claim does not replace these checks.
 
-If work delegates, it must write `state/jobs/<id>/children.json` as a list such as
-`[{"id": "Child", "outputs": ["child-result.txt"]}]`. Every RPC child must have
-completed, appear in that manifest, and have its named outputs present. The runner
-retrieves complete child transcripts through public RPC, not the task preview.
-Review delegation uses a separate `reviews/<review-round>/children.json` in the
-job folder, with outputs relative to that review evidence folder. Child
-transcripts are cached per session across interruption. Completed transcripts
-are reused without requiring the server to retain their IDs. An empty initial
-transcript is missing evidence. If child evidence is unavailable or corrupt,
-recovery stops for user judgment instead of assuming that no children ran.
+Work and review sessions must settle and report no pending asynchronous work
+through public RPC state before the runner advances. Child transcripts and
+manifests are not acceptance evidence.
 
 Code results must be committed and clean. Other results use hashes of named
 output paths and file contents. Before accepting a review, the runner rechecks
-the accepted command log hash, required files, checklist, work-child evidence,
-and every copied input hash. A review is accepted only for the current result
-and current intent, spec, and review profile basis. The review session is separate
+the accepted command log hash, required files, checklist, and every copied input
+hash. A review is accepted only for the current result and current intent, spec,
+and review profile basis. The review session is separate
 from the work session. Re-review includes prior findings, and three automatic
 fix rounds are the limit before user judgment. An approved resume into a review
 fix reserves the first round of the new cycle before it starts.
