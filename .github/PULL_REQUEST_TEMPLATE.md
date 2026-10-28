@@ -4,9 +4,7 @@
 
 ## Why
 
-<!-- Why is the change needed? -->
-
-Closes #
+<!-- Why is the change needed? If an issue exists, add: Closes #number -->
 
 ## Testing
 

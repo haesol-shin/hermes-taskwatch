@@ -4,9 +4,9 @@ Thank you for your interest in hermes-taskwatch. The project is experimental, so
 
 ## Before you start
 
-- For a bug, open an issue with the bug form.
-- For a new feature or a larger change, open an issue with the feature form first and agree on the approach before you write code.
-- Small fixes (typos, documentation, obvious bugs) can go straight to a pull request.
+- Open an issue to report a bug or to propose work you are not going to implement yourself.
+- If you are going to implement a change yourself, do not open an issue for it first. Open the pull request directly. For a new feature or a larger change, start a discussion in [Discussions](https://github.com/haesol-shin/hermes-taskwatch/discussions) before you write code, so the approach is agreed.
+- If an issue for the change already exists, link it from the pull request.
 
 ## Development
 
@@ -56,9 +56,9 @@ fix(gate): block completion when the review is for an old commit
 
 Pull request titles use the same `type(scope): summary` format as commit titles.
 
-The pull request body is the evidence for merging this change now: tests run, CI, review, linked issue, and known limits. It stays on GitHub and is reached through the `#number` in the commit title.
+The pull request body is the evidence for merging this change now: tests run, CI, review, linked issue if any, and known limits. It stays on GitHub and is reached through the `#number` in the commit title.
 
-- Fill in the pull request template. Link the issue with `Closes #`.
+- Fill in the pull request template. If an issue exists, link it with `Closes #`.
 - Add one line under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) when the change is visible to users.
 - Do not commit secrets, personal values, or local paths. Use placeholders in examples.
 - Merging:
