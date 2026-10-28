@@ -28,7 +28,7 @@ GOOD_FILES = {
 CHECK = [
     sys.executable,
     "-c",
-    "import sys; print('to-stdout'); print('to-stderr', file=sys.stderr);"
+    "import sys; print('to-stdout', flush=True); print('to-stderr', file=sys.stderr);"
     " sys.exit(0 if open('out.txt').read().strip() == 'ok' else 1)",
 ]
 GIT = [
