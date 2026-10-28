@@ -103,4 +103,6 @@ Missing inputs, corrupt records, unknown service outcomes, exhausted recovery/fi
 budgets, approval waits, blocked predecessors, and cancellations prevent automatic completion.
 See [standalone configuration](configuration.md#standalone-jobs) for commands and
 the timer entry point. Successful checks and review lead to `deliver_pending`;
-this version has no delivery action.
+the scanner then runs the configured delivery command, see
+[delivery](configuration.md#delivery). Only a recorded successful delivery makes
+the job `done`.

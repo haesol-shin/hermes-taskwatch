@@ -14,6 +14,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from .job_delivery import deliver_job
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobState, progress_fingerprint
 
 SLOT_STAGES = frozenset({"work", "check", "review", "fix"})
@@ -174,6 +175,8 @@ class _Scan:
                 job, stage="approval_wait", resume_stage="work", wait_reason="approval_required"
             )
             self._save(self._event(job, "approval_wait"))
+        if job.stage == "deliver_pending" and not job.unit:
+            self.all[job.id] = deliver_job(self.jobs, self.config, job, self.now)
 
     def _confirm_dead(self, job: JobState) -> bool:
         """True when the job's whole old service is dead; never assumed, even after a reboot."""

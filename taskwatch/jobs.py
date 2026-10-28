@@ -93,6 +93,7 @@ class JobState:
     basis: str = ""
     error: str = ""
     guideline_hashes: Mapping[str, str] | None = None
+    deliveries: tuple[Mapping, ...] = ()
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -110,6 +111,7 @@ class JobConfig:
     stall_seconds: int = 1800
     omp_command: tuple[str, ...] = ("omp",)
     rpc_timeout: int = 3600
+    deliver_command: tuple[str, ...] = ("false", "{message}")
 
 
 def load_job_config(root: Path) -> JobConfig:
@@ -121,9 +123,11 @@ def load_job_config(root: Path) -> JobConfig:
         "stall_seconds",
         "omp_command",
         "rpc_timeout",
+        "deliver_command",
     }:
         raise ValueError(
-            "jobs config needs version, slots, stall_seconds, omp_command, rpc_timeout"
+            "jobs config needs version, slots, stall_seconds, omp_command, rpc_timeout, "
+            "deliver_command"
         )
     if type(obj["version"]) is not int or obj["version"] != 1:
         raise ValueError("unknown jobs config version")
@@ -131,8 +135,18 @@ def load_job_config(root: Path) -> JobConfig:
         if type(obj[key]) is not int or obj[key] < 1:
             raise ValueError(f"{key} must be a positive integer")
     _strings(obj["omp_command"], "omp_command", nonempty=True)
+    _strings(obj["deliver_command"], "deliver_command", nonempty=True)
+    command = obj["deliver_command"]
+    if command.count("{message}") != 1 or any(
+        "{message}" in part and part != "{message}" for part in command
+    ):
+        raise ValueError("deliver_command needs exactly one whole-argument {message}")
     return JobConfig(
-        obj["slots"], obj["stall_seconds"], tuple(obj["omp_command"]), obj["rpc_timeout"]
+        obj["slots"],
+        obj["stall_seconds"],
+        tuple(obj["omp_command"]),
+        obj["rpc_timeout"],
+        tuple(command),
     )
 
 
@@ -322,6 +336,12 @@ def _validate_record(job: dict) -> None:
             raise RecordError(f"jobs.jsonl: invalid {key}")
     _validate_controls(job)
     _validate_manifest(job)
+    deliveries = job.get("deliveries", [])
+    if not isinstance(deliveries, list) or any(
+        not isinstance(row, dict) or row.get("status") not in {"started", "success", "unknown"}
+        for row in deliveries
+    ):
+        raise RecordError("jobs.jsonl: invalid delivery attempts")
 
 
 def _validate_controls(job: dict) -> None:
