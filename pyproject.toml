@@ -8,6 +8,19 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+taskwatch = "taskwatch.job_cli:main"
+
+[tool.setuptools]
+packages = ["taskwatch"]
+
+[tool.setuptools.data-files]
+"share/hermes-taskwatch/review" = ["docs/review/*.md"]
+
 [project.urls]
 Repository = "https://github.com/haesol-shin/hermes-taskwatch"
 Changelog = "https://github.com/haesol-shin/hermes-taskwatch/blob/main/CHANGELOG.md"
@@ -17,7 +30,7 @@ Issues = "https://github.com/haesol-shin/hermes-taskwatch/issues"
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.uv]
-package = false
+package = true
 
 [tool.ruff]
 line-length = 100

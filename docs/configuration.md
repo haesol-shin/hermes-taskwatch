@@ -130,3 +130,168 @@ An unreadable board prevents a clean scan: the command exits 1 and uses `destina
 With `watch_hook: true`, dispatch-tick scans use the same read-failure notification path. Unreadable board evidence is reported to `destinations.user_notify` and returned as a diagnostic line instead of escaping the hook as an exception.
 
 If `taskwatch/config.json` is missing, unreadable, or invalid, `scan` cannot determine a destination. It exits 1 and writes one stderr line containing the file path and failure cause. The systemd timer's service journal retains stderr; inspect it with `journalctl --user -u hermes-taskwatch-scan.service`. No fallback destination is used.
+
+## Standalone jobs
+
+The standalone `taskwatch` command never imports Hermes. `--root <root>` selects
+the root explicitly; otherwise `HERMES_HOME`, then `~/.hermes`, is used. Select
+the shared root, not a worker profile root. State uses the same
+`<root>/taskwatch/state/lock` as the plugin.
+Use persistent, nonsynchronized storage for operational state. Temporary
+directories are suitable only for synthetic tests.
+
+`taskwatch --root <root> init` writes `taskwatch/jobs-config.json` if absent:
+
+```json
+{
+  "version": 1,
+  "slots": 2,
+  "stall_seconds": 1800,
+  "omp_command": ["omp"],
+  "rpc_timeout": 3600
+}
+```
+
+All keys are required. The three numeric settings are positive integer counts
+or seconds. `omp_command` is an argument list prefix. Checks use the submission's
+`check_command`, not this model command.
+
+### Submit an approved job
+
+Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
+
+```json
+{
+  "receipt_key": "approval-message-1:job-1",
+  "approval_source": "approval-message-1",
+  "approval_scope": "Create local deliverables only",
+  "prompt": "Write the approved deliverable and record execution evidence.",
+  "kind": "document",
+  "target": "/srv/example-target",
+  "intent": "/srv/example-inputs/intent.md",
+  "spec": "/srv/example-inputs/spec.md",
+  "inputs": {
+    "work": ["/srv/example-inputs/context.md"],
+    "review": ["/srv/example-inputs/review-context.md"]
+  },
+  "outputs": ["result.md"],
+  "check_command": ["sh", "check-result.sh"],
+  "checklist": "checklist.json",
+  "progress": "progress.md",
+  "predecessors": [],
+  "expected_wait_seconds": 0,
+  "approval_required": false
+}
+```
+
+`target` must exist. Kinds are `code`, `design`, `document`, and `research`.
+Outputs, checklist, and progress paths are relative to the job workspace and
+cannot traverse outside it. `check_command` runs as argv without an implicit
+shell; name a shell explicitly only when the approved check needs one.
+The work must create that check script if it is not already in its workspace.
+The checklist follows the existing nonempty `items` list of boolean `passes`.
+
+`inputs`, `predecessors`, `expected_wait_seconds`, and `approval_required` are
+optional. Every other example field is required. Predecessors must already
+exist. Derive the receipt key from the approval message and its job number.
+A repeated key returns the original job even if other arguments differ.
+The command records the caller's approval assertion; it cannot authenticate
+the conversation.
+
+`approval_required` defaults to `false`. If `true`, the first scan moves the job
+to `approval_wait` before its first work run. `approve` clears that flag and
+allows work to start. A later `wait` records the current step for approval.
+`approval_scope` is a recorded boundary, not operating-system isolation.
+The runner's shell tools have the user's permissions; instructions and
+explicit approval records cannot enforce those permissions.
+
+The check command must exit `0`. Required outputs and a nonempty passing
+checklist must also exist after the command finishes. Minimal checklist:
+
+```json
+{"items": [{"passes": true}]}
+```
+
+No other checklist item fields are required. A `false` item, missing file,
+invalid JSON, or empty list blocks progress. The independent reviewer returns
+exactly one verdict JSON line followed by findings, for example:
+
+```text
+{"verdict": "PASS", "blocking": false, "reviewer": "independent-review"}
+No blocking findings.
+```
+
+A FAIL, malformed verdict, missing input, or blocking finding prevents
+`deliver_pending`. See [review records](checks.md#review-records) for the shared contract.
+
+Submission copies and hashes intent, spec, and role-specific inputs. The
+original prompt is kept intact. `jobs.jsonl` stores append-only, checksummed
+snapshots. The existing torn-tail repair preserves a partial last line before
+the next append. Corrupt committed records block scheduling rather than
+letting a job start or pass. Inspect the scan service journal for diagnostics.
+
+Each job has `state/jobs/<id>/`, a separate workspace, copied inputs, a
+`WORKFLOW.md`, and execution evidence. Code jobs use a detached git worktree
+at the target's HEAD. Results remain there for inspection; this command
+does not merge or apply them.
+
+### Timer entry point
+
+The plugin commands and its current units continue to work unchanged.
+Do not register a job in both the Hermes board and the standalone job board.
+Stop new legacy dispatch and let existing cards finish before replacing the
+timer entry point. Preserve the five-minute timer schedule.
+
+`taskwatch --root <root> init --unit-dir <empty-unit-staging-directory>` writes
+`hermes-taskwatch-scan.service` and `.timer` without installing, reloading, or
+enabling them. Existing files are refused. The service calls the standalone
+`scan` with the current interpreter and explicit root. Inspect the staged files
+and replace the existing service only as part of an approved installation.
+Run `systemctl --user daemon-reload` after installing it. Confirm the timer is
+enabled and active, and confirm linger with `loginctl show-user <user> -p Linger`
+if jobs must survive logout. Run these installation steps only on the intended
+host with approval.
+
+`scan` is a short scheduler, not a resident dispatcher. It reserves the job
+attempt durably before invoking `systemd-run --user`. The deterministic
+`taskwatch-<id>-a<attempt>.service` name allows a later scan to find a start
+whose acknowledgement was lost. `taskwatch run <id> --attempt <n>` is an
+internal step command; do not run it alongside the service.
+
+### Recovery and decisions
+
+The job retains its parallel slot through work, checks, review, and fixes.
+The target is locked across these stages. A blocked predecessor leaves
+the successor queued. An unrelated target can still start.
+Dead or reboot-interrupted runs resume only after the old service is known
+to have stopped. An unknown service outcome requires user judgment.
+Unchanged progress and output content first produces a stall suspicion;
+another unchanged scan stops the service and recovers. Log growth alone is
+not progress. Expected waits delay stall recovery.
+
+Three consecutive failed recoveries stop for user judgment. Passing checks
+reset that recovery budget. The independent review has a separate per-cycle
+cap of three automatic fix rounds. A fresh review uses `docs/review/` profiles
+and the existing verdict JSON contract. Fingerprints and review basis are
+computed by code; changing either invalidates the earlier pass.
+
+```sh
+taskwatch --root <root> wait <id> --reason "Unapproved external write"
+taskwatch --root <root> approve <id> --reason "approval-message-2" --scope "Exact approved scope"
+taskwatch --root <root> resume <id> --reason "Approved a new fix cycle"
+taskwatch --root <root> cancel <id> --reason "User cancelled"
+```
+
+Wait and cancel fence late output immediately. The scanner confirms service
+termination before reusing the slot or target. Approval resumes the saved step;
+an explicit user resume opens a new recovery/fix cycle. Resuming a review fix
+reserves its first round before launch. Check repairs keep the separate recovery
+budget. No command sends a message. External outcome reconciliation is outside
+this version.
+
+`approve --scope` records a replacement approved scope together with the approval
+source. Omit it to preserve the original scope, such as an initial approval wait.
+Do not use a broader scope than the user actually approved.
+
+After checks and review pass, the stage is `deliver_pending`, not `done`.
+Delivery integration and real-install acceptance are outside this version.

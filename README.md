@@ -2,15 +2,38 @@
 
 **Delegate and walk away. Nothing gets dropped, nothing unchecked gets through.**
 
-hermes-taskwatch is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) Kanban. It watches delegated work, blocks unchecked results from moving on, and wakes the main agent or you only when a decision is needed.
+hermes-taskwatch provides a standalone job runner and a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) Kanban. The standalone runner schedules approved jobs, checks their outputs, and requests an independent review. The existing plugin watches delegated cards and blocks unchecked results.
 
 > Status: experimental. See [Known limitations](#known-limitations).
 
 ## What it is not
 
 - It does not patch or replace Hermes. It registers plugin hooks, commands, and tools.
-- It does not execute the work, merge it, or apply results for you. It creates cards, records approvals, and reopens gates through its tools.
-- It does not call a model. Every check is plain code, listed in [docs/checks.md](docs/checks.md).
+- The Hermes plugin does not execute work. The standalone runner executes approved jobs through omp's public RPC.
+- Every check is plain code and never calls a model. Work, fixes, and independent reviews use omp.
+
+## Standalone jobs
+
+Install with `uv sync --locked`, then use `uv run taskwatch`. Hermes is not required.
+Linux user systemd and omp are required for actual background runs.
+
+```sh
+taskwatch --root <root> init
+taskwatch --root <root> submit <approved-job.json>
+taskwatch --root <root> scan
+taskwatch --root <root> show <job-id>
+```
+
+Submission returns only after the job and copied inputs are durable. The receipt key
+deduplicates retries. `scan` reserves up to the configured number of parallel slots
+and starts transient user services. A job keeps its slot across work, check, review,
+and fixes. Jobs sharing a target cannot overlap. Approval and user-judgment waits
+release their slots after their service has stopped.
+
+Successful jobs stop at `deliver_pending`. This version does not send results or
+mark them delivered. Real omp, service recovery, and reboot acceptance still need
+an authorized installation test. See [standalone configuration](docs/configuration.md#standalone-jobs)
+for the submission format, timer migration, recovery, and approval commands.
 
 ## Install
 
