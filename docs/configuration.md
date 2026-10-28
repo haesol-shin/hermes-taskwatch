@@ -148,13 +148,16 @@ directories are suitable only for synthetic tests.
   "slots": 2,
   "stall_seconds": 1800,
   "omp_command": ["omp"],
-  "rpc_timeout": 3600
+  "rpc_timeout": 3600,
+  "deliver_command": ["false", "{message}"]
 }
 ```
 
 All keys are required. The three numeric settings are positive integer counts
 or seconds. `omp_command` is an argument list prefix. Checks use the submission's
-`check_command`, not this model command.
+`check_command`, not this model command. `deliver_command` is described in
+[Delivery](#delivery). The draft value
+`["false", "{message}"]` is intentionally disabled: it can never send, so edit it before use.
 
 ### Submit an approved job
 
@@ -258,6 +261,66 @@ attempt durably before invoking `systemd-run --user`. The deterministic
 whose acknowledgement was lost. `taskwatch run <id> --attempt <n>` is an
 internal step command; do not run it alongside the service.
 
+### Installation switch
+
+Do these steps in order on the intended host, with approval. Stop at the first failure.
+
+1. Stop new legacy dispatch and let existing cards finish. Do not register a job in both the Hermes board and the standalone job board.
+2. Stage the units: `taskwatch --root <root> init --unit-dir <empty-unit-staging-directory>`. This also writes `jobs-config.json` if absent. Nothing is installed or enabled.
+3. Edit `<root>/taskwatch/jobs-config.json`, including `deliver_command` (see [Delivery](#delivery)).
+4. Inspect the staged `hermes-taskwatch-scan.service` and `.timer`, install them into `~/.config/systemd/user/` (replacing the legacy units only as part of this approval), then run `systemctl --user daemon-reload`.
+5. Enable the timer with `systemctl --user enable --now hermes-taskwatch-scan.timer`. Confirm it is enabled and active, and confirm linger with `loginctl show-user <user> -p Linger` if jobs must survive logout.
+6. Submit jobs with `taskwatch --root <root> submit <approved-job.json>`.
+
+### Delivery
+
+The `init` draft sets `deliver_command` to `["false", "{message}"]`, which
+intentionally cannot send. Every delivery attempt fails until the operator
+replaces it, so edit it before enabling the timer.
+
+`jobs-config.json` requires `deliver_command`: a list of nonempty strings run as
+argv without a shell. Exactly one argument must be the whole string `{message}`;
+it is replaced with the absolute path of the generated message file. The
+destination is a literal argument written in this command, not the job's
+`target` (a workspace path). Example, with a synthetic destination:
+
+```json
+"deliver_command": ["hermes", "send", "--to", "person.invalid", "--file", "{message}", "--json"]
+```
+
+Hermes is optional. Without it, provide a sender executable for your channel and
+configure its argv instead, for example
+`["notify-command", "--to", "person.invalid", "--file", "{message}"]`.
+The sender must wait for the channel server's response and implement this contract:
+stdout must contain exactly one JSON object, with no diagnostic text around it.
+Write diagnostics to stderr. Both streams and the exit code are recorded.
+For example, exit 0 with `{"success": true, "message_id": "synthetic-message"}`
+confirms sending; a positive nonzero exit with `{"error": "synthetic refusal"}`
+confirms nothing was sent. Do not report an uncertain send as a definite failure.
+
+For a job at `deliver_pending`, `scan` runs this step under the state lock after
+the old unit has been released. It writes `delivery.txt` (title from the first
+prompt line, job id, latest review verdict, absolute output paths, result
+workspace, review body file, and check log path) and `delivery-review.txt` in the
+job folder, records the attempt as `started` with the message file and the
+SHA-256 of `delivery.txt`, then runs the command with a fixed 60 second timeout.
+
+Success needs exit code 0, a JSON object with a truthy `success`, no `error`, and
+a present `message_id`. Then the job becomes `done` and is never sent again.
+Success means the command reported acceptance; it is not a read receipt. A
+response with only `skipped` is unknown, not done.
+
+- A positive nonzero exit with a readable JSON `error` and no success is a
+  definite failure. The next scan retries it. The third failure moves the job to
+  `user_wait` with reason `delivery_failed`.
+- Anything else (timeout, unreadable output, signal, ambiguous response) or an
+  earlier attempt still `started` is unknown. The job moves to `user_wait` with
+  reason `delivery_unknown` and is never resent automatically.
+- `resume <id>` restores `deliver_pending`, resets the failure count, and keeps the
+  attempt history; an interrupted `started` attempt is recorded as unknown. Resume
+  after an unknown outcome only when a duplicate message is explicitly accepted,
+  because the earlier message may have been delivered. `cancel` behaves as before.
+
 ### Recovery and decisions
 
 The job retains its parallel slot through work, checks, review, and fixes.
@@ -286,12 +349,12 @@ Wait and cancel fence late output immediately. The scanner confirms service
 termination before reusing the slot or target. Approval resumes the saved step;
 an explicit user resume opens a new recovery/fix cycle. Resuming a review fix
 reserves its first round before launch. Check repairs keep the separate recovery
-budget. No command sends a message. External outcome reconciliation is outside
-this version.
+budget. Only the delivery step sends a message; other commands do not. External
+outcome reconciliation is outside this version.
 
 `approve --scope` records a replacement approved scope together with the approval
 source. Omit it to preserve the original scope, such as an initial approval wait.
 Do not use a broader scope than the user actually approved.
 
-After checks and review pass, the stage is `deliver_pending`, not `done`.
-Delivery integration and real-install acceptance are outside this version.
+After checks and review pass, the stage is `deliver_pending`, not `done`; see
+[Delivery](#delivery). Real-install acceptance is outside this version.

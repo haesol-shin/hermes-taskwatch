@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -51,7 +52,16 @@ class Board:
         self.root = root
         self.jobs = Jobs(root / "home")
         self.service = FakeService()
-        self.config = JobConfig(slots=slots, stall_seconds=STALL)
+        self.config = JobConfig(
+            slots=slots,
+            stall_seconds=STALL,
+            deliver_command=(
+                sys.executable,
+                "-c",
+                'print(\'{"success": true, "message_id": "synthetic-message"}\')',
+                "{message}",
+            ),
+        )
         self.clock = 1000.0
         self.count = 0
 

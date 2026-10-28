@@ -14,8 +14,10 @@ hermes-taskwatch provides a standalone job runner and a plugin for [Hermes Agent
 
 ## Standalone jobs
 
-Install with `uv sync --locked`, then use `uv run taskwatch`. Hermes is not required.
-Linux user systemd and omp are required for actual background runs.
+From a checkout of this repository, run `uv sync --locked`, then use `uv run taskwatch`.
+The examples below assume `. .venv/bin/activate`; otherwise prefix `taskwatch` with `uv run`.
+Hermes is optional. Prepare Linux user systemd, an omp executable for `omp_command`,
+and a delivery command before enabling background runs.
 
 ```sh
 taskwatch --root <root> init
@@ -30,10 +32,15 @@ and starts transient user services. A job keeps its slot across work, check, rev
 and fixes. Jobs sharing a target cannot overlap. Approval and user-judgment waits
 release their slots after their service has stopped.
 
-Successful jobs stop at `deliver_pending`. This version does not send results or
-mark them delivered. Real omp, service recovery, and reboot acceptance still need
-an authorized installation test. See [standalone configuration](docs/configuration.md#standalone-jobs)
-for the submission format, timer migration, recovery, and approval commands.
+Successful jobs stop at `deliver_pending`. The next `scan` writes a delivery message
+and runs the configured `deliver_command`, with a fixed 60 second timeout. Only a
+recorded success makes the job `done`; it never sends again. A success response means
+the command reported success, not that the person read the message. A definite failure
+is retried on the next scan, at most three times; an unknown outcome is never resent
+automatically and waits for a user decision. Real omp, service recovery, reboot, and
+real delivery acceptance still need an authorized installation test. See
+[standalone configuration](docs/configuration.md#standalone-jobs) for the submission
+format, delivery, installation switch, recovery, and approval commands.
 
 ## Install
 
