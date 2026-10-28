@@ -36,6 +36,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Fixed
 
+- Bind work-child review acceptance to checksummed evidence and recorded identities, and refresh terminal transcripts after same-session follow-up starts.
 - Revalidate standalone review evidence, reject missing child transcripts and interrupted RPC chunks, preserve collected child transcripts, bound resumed review fixes, and isolate unreadable job progress.
 - Clarify safe plugin updates, default-profile timer pinning, production destinations, review executor responsibility, and user escalation; consolidate operational guidance.
 - The enabled dispatch watch hook reports unreadable board evidence through the same user notification path as `scan`, without leaking the read error.

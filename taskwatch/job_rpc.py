@@ -153,6 +153,7 @@ class RpcClient:
         self._decoder = FrameDecoder()
         self._exit: int | None = None
         self._lifecycle: dict[str, dict] = {}
+        self._child_refresh: dict[str, int] = {}
         self._last_stop: object = None
         self._yield_stop: object = None
 
@@ -251,6 +252,8 @@ class RpcClient:
         if isinstance(payload, dict) and isinstance(payload.get("id"), str):
             self._lifecycle[payload["id"]] = {**self._lifecycle.get(payload["id"], {}), **payload}
             self.lifecycle_version += 1
+            if payload.get("status") == "started":
+                self._child_refresh[payload["id"]] = self.lifecycle_version
 
     def _note_message(self, message: object) -> None:
         if isinstance(message, dict) and message.get("role") == "assistant":
@@ -393,7 +396,7 @@ class RpcClient:
         Terminal subagents leave get_subagents, so lifecycle frames are merged with the live
         registry. Saved terminal transcripts do not depend on continued server retention.
         `cached` maps f"{id}\\0{sessionFile or ''}" to the caller's saved record: a terminal one
-        with a transcript keeps it, because the server evicts old transcript ids.
+        with a transcript keeps it unless a new started event requires collection again.
         A completed child whose transcript was never collected is missing evidence.
         """
         listed = self.request("get_subagents", timeout).get("subagents")
@@ -412,8 +415,11 @@ class RpcClient:
 
     def _collect(self, child: dict, cached: Mapping[str, dict], timeout: float) -> dict:
         old = cached.get(f"{child.get('id')}\0{child.get('sessionFile') or ''}")
+        with self._cv:
+            refresh = self._child_refresh.get(child["id"])
         if (
             old is not None
+            and refresh is None
             and old.get("status") in _TERMINAL
             and child.get("status") in _TERMINAL
             and isinstance(old.get("messages"), list)
@@ -430,6 +436,11 @@ class RpcClient:
             ) from exc
         if not messages and child.get("status") == "completed":
             raise MissingTranscript(f"the transcript of subagent {child.get('id')} is missing")
+        if child.get("status") in _TERMINAL:
+            # A start received during collection must still invalidate the next cache read.
+            with self._cv:
+                if self._child_refresh.get(child["id"]) == refresh:
+                    self._child_refresh.pop(child["id"], None)
         return {**child, "messages": messages}
 
     def _messages(self, child: dict, timeout: float) -> list:

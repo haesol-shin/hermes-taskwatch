@@ -377,6 +377,30 @@ def test_review_pass_needs_its_evidence_to_still_hold(env, case):
         assert "review_stale" in [e["type"] for e in current.events]
 
 
+@pytest.mark.parametrize(
+    "case", ["cache_erased", "cache_erased_child_output_missing", "cache_hash_corrupt"]
+)
+def test_review_revalidates_work_children_against_durable_evidence(env, case):
+    manifest = json.dumps([{"id": "Kid", "outputs": ["kid.txt"]}])
+    files = {**GOOD_FILES, "kid.txt": "result", str(env.folder() / "children.json"): manifest}
+    env.scenario([{"writes": files, "subagents": [child("Kid", "completed")]}])
+    assert env.run("work") == 0
+    assert env.run("check") == 0
+    assert env.get().checks[-1]["ok"]
+    if case == "cache_hash_corrupt":
+        source = env.folder() / "evidence" / "work.json"
+        source.write_text(source.read_text().replace("xxxx", "yyyy"), encoding="utf-8")
+    else:
+        (env.folder() / "children-rpc.json").write_text("[]", encoding="utf-8")
+        if case == "cache_erased_child_output_missing":
+            (env.folder() / "work" / "kid.txt").unlink()
+    env.scenario([{"reply": PASS}])
+    assert env.run("review") == 0
+    job = env.get()
+    assert job.stage == "check" and job.reviews == ()
+    assert "review_stale" in [event["type"] for event in job.events]
+
+
 def test_result_changed_before_review_goes_back_to_check(env):
     env.to_review()
     (env.folder() / "work" / "out.txt").write_text("ok\nlater\n", encoding="utf-8")

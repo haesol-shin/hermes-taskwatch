@@ -545,6 +545,10 @@ class ChildStore:
         merged = self._merge(fresh)
         self.loaded = merged
         self._save(merged)
+        self.validate(merged, seen)
+        return list(merged.values())
+
+    def validate(self, merged: dict[str, dict], seen: set[str]) -> None:
         job = self.ctx.jobs.load().get(self.ctx.job.id) or self.ctx.job
         files: dict[str, set[str]] = {}
         for event in job.events:
@@ -569,7 +573,6 @@ class ChildStore:
             raise ChildEvidenceLost(
                 "earlier subagents cannot be accounted for: " + ", ".join(lost + stale)
             )
-        return list(merged.values())
 
 
 def _digest(value: object) -> str:
@@ -622,7 +625,7 @@ def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text:
 def _agent_step(ctx: Ctx) -> int:
     turn = _converse(ctx, ctx.folder / "sessions" / "work", lambda r: _agent_message(ctx, r), False)
     (ctx.folder / "children-rpc.json").write_text(json.dumps(turn.children), encoding="utf-8")
-    problems = _child_problems(ctx.folder, ctx.workspace)
+    problems = _child_problems(ctx)
     if problems:
         raise StepError("; ".join(problems))
     stage = ctx.stage
@@ -660,13 +663,20 @@ def _unfinished(children: list) -> list[str]:
     ]
 
 
-def _child_problems(folder: Path, workspace: Path) -> list[str]:
-    """Check the work session's subagents: saved registry plus the work manifest."""
+def _child_problems(ctx: Ctx) -> list[str]:
+    """Bind the work registry to durable evidence before checking its outputs."""
     try:
-        children = json.loads((folder / "children-rpc.json").read_text(encoding="utf-8"))
+        children = json.loads((ctx.folder / "children-rpc.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ["the subagent list of the session was not saved"]
-    return _accept_children(children, folder / "children.json", workspace)
+    try:
+        store = ChildStore(ctx, ctx.folder / "sessions" / "work")
+        store.validate(store.loaded, set(store.loaded))
+    except ChildEvidenceLost as exc:
+        return [str(exc)]
+    if not isinstance(children, list) or children != list(store.loaded.values()):
+        return ["the saved subagent list does not match durable child evidence"]
+    return _accept_children(children, ctx.folder / "children.json", ctx.workspace)
 
 
 def _accept_children(children: list, manifest_path: Path, root: Path) -> list[str]:
@@ -795,7 +805,7 @@ def _check_step(ctx: Ctx) -> int:
     run, problems = _run_command(ctx, seq)
     # After the command: it may have changed or removed what the checks require.
     problems += _file_problems(job, ctx.workspace)
-    problems += _child_problems(ctx.folder, ctx.workspace)
+    problems += _child_problems(ctx)
     fingerprint = basis = ""
     try:
         fingerprint = _fingerprint(job, ctx.workspace)
@@ -915,7 +925,7 @@ def _evidence_problems(ctx: Ctx) -> list[str]:
             return ["the check log does not match its recorded hash"]
     except OSError as exc:
         return [f"the check log is unreadable: {exc}"]
-    return [*_file_problems(job, ctx.workspace), *_child_problems(ctx.folder, ctx.workspace)]
+    return [*_file_problems(job, ctx.workspace), *_child_problems(ctx)]
 
 
 def _requeue_check(job: JobState) -> dict:
