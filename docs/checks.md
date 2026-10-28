@@ -73,3 +73,36 @@ The person is told when any of three conditions holds: a warning has no received
 ## Not covered
 
 The gate covers agent tool calls only. A person running `hermes kanban complete` in a terminal is not blocked; the scan reports unchecked results afterward. The gate also does not see commands an executor starts. taskwatch does not isolate what an executor can read or write; path limits require the executor's own permissions or the operating system.
+
+## Standalone job checks
+
+The standalone runner uses the same checklist and review verdict contracts without
+opening a Hermes board. The check service runs the approved `check_command` in the
+job workspace and records its exit code and complete combined output. It then
+verifies required outputs, progress, checklist, and accepted child results.
+A model's PASS claim does not replace these checks.
+
+If work delegates, it must write `state/jobs/<id>/children.json` as a list such as
+`[{"id": "Child", "outputs": ["child-result.txt"]}]`. Every RPC child must have
+completed, appear in that manifest, and have its named outputs present. The runner
+retrieves complete child transcripts through public RPC, not the task preview.
+Review delegation uses a separate `reviews/<review-round>/children.json` in the
+job folder, with outputs relative to that review evidence folder. Child
+transcripts are cached per session across interruption. If prior child evidence
+is unavailable or corrupt, recovery stops for user judgment instead of assuming
+that no children ran.
+
+Code results must be committed and clean. Other results use hashes of named
+output paths and file contents. A review is accepted only for the current result
+and current intent, spec, and review profile basis. The review session is separate
+from the work session. Re-review includes prior findings, and three automatic
+fix rounds are the limit before user judgment.
+
+The scanner starts ready jobs with free slots, preserves slots between steps,
+and holds a target until the old service is confirmed stopped. It records and
+recovers dead runs, two-scan stalls, and reboot interruptions. Missing inputs,
+corrupt records, unknown service outcomes, exhausted recovery/fix budgets, approval
+waits, blocked predecessors, and cancellations prevent automatic completion.
+See [standalone configuration](configuration.md#standalone-jobs) for commands and
+the timer entry point. Successful checks and review lead to `deliver_pending`;
+this version has no delivery action.
