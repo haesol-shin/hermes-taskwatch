@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shlex
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -11,6 +12,7 @@ import pytest
 
 from taskwatch import job_delivery
 from taskwatch.job_cli import main as cli_main
+from taskwatch.job_runner import _basis, _fingerprint
 from taskwatch.job_scan import scan_jobs
 from taskwatch.jobs import Jobs, JobState, load_job_config
 from tests.test_job_scan import Board
@@ -137,7 +139,7 @@ def board(tmp_path: Path, sender: Sender) -> Board:
 
 def finished_job(board: Board, **changes: object) -> JobState:
     """A job whose review passed and whose step service is already released."""
-    job_id = board.add(prompt=PROMPT)
+    job_id = board.add(prompt=PROMPT, kind="document")
     folder = board.jobs.folder(board.get(job_id))
     workspace = folder / "work"
     workspace.mkdir(parents=True)
@@ -145,6 +147,9 @@ def finished_job(board: Board, **changes: object) -> JobState:
     log = folder / "logs" / "check-1.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("all green", encoding="utf-8")
+    job = replace(board.get(job_id), workspace=str(workspace))
+    fingerprint = _fingerprint(job, workspace)
+    basis = _basis(job, folder)
     board.set(
         job_id,
         stage="deliver_pending",
@@ -152,7 +157,22 @@ def finished_job(board: Board, **changes: object) -> JobState:
         workspace=str(workspace),
         ended_at=board.clock,
         checks=({"seq": 1, "ok": True, "exit_code": 0, "log": str(log)},),
-        reviews=({"seq": 2, "ok": True, "verdict": "PASS", "body": REVIEW_BODY},),
+        reviews=(
+            {
+                "seq": 2,
+                "ok": True,
+                "verdict": "PASS",
+                "body": REVIEW_BODY,
+                "fingerprint": fingerprint,
+                "basis": basis,
+            },
+        ),
+        fingerprint=fingerprint,
+        basis=basis,
+        guideline_hashes={
+            str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in (folder / "review-docs").iterdir()
+        },
         **changes,
     )
     return board.get(job_id)
@@ -241,7 +261,9 @@ def test_acceptance_followed_by_an_error_is_unknown_and_never_resent(board: Boar
         "error": "Telegram send failed: Timed out"
     }
     board.scan()
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
+    assert "delivery_unknown" in sender.calls()[1]["text"]
+    assert stopped.notices[0]["status"] == "success"
     assert (sender.dir / "accepted").read_text(encoding="utf-8") == "accepted\n"
     assert board.get(job.id) == stopped
 
@@ -258,7 +280,8 @@ def test_timeout_is_unknown_and_never_resent(
     assert statuses(parked) == ["unknown"]
     board.scan()
     board.scan()
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
+    assert board.get(job.id).notices[0]["status"] == "unknown"
     assert board.get(job.id).stage == "user_wait"
 
 
@@ -272,7 +295,7 @@ def test_an_unprovable_outcome_is_unknown_and_never_resent(board: Board, sender:
     assert statuses(parked) == ["unknown"]
     board.scan()
     board.scan()
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
     assert board.get(job.id).stage == "user_wait"
 
 
@@ -288,15 +311,16 @@ def test_an_interrupted_started_attempt_is_unknown_and_not_resent(board: Board, 
     board.scan()
     parked = board.get(job.id)
     assert (parked.stage, parked.wait_reason) == ("user_wait", "delivery_unknown")
-    assert sender.calls() == []
+    assert len(sender.calls()) == 1
+    assert "delivery_unknown" in sender.calls()[0]["text"]
     board.scan()
-    assert sender.calls() == []
+    assert len(sender.calls()) == 1
     cli(board, "resume", job.id)
     board.scan()
     done = board.get(job.id)
     assert done.stage == "done"
     assert statuses(done) == ["unknown", "success"]
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
 
 
 def test_a_running_unit_defers_delivery_until_it_is_released(board: Board, sender: Sender):
@@ -325,10 +349,10 @@ def test_resume_after_unknown_sends_once_without_rerunning_work(board: Board, se
     done = board.get(job.id)
     assert done.stage == "done"
     assert statuses(done) == ["unknown", "success"]
-    assert len(sender.calls()) == 2
+    assert len(sender.calls()) == 3
     assert board.service.started == []
     board.scan()
-    assert len(sender.calls()) == 2
+    assert len(sender.calls()) == 3
     assert done.attempt == job.attempt
 
 
@@ -380,6 +404,102 @@ def test_concurrent_scans_send_exactly_once(board: Board, sender: Sender):
     done = board.get(job.id)
     assert done.stage == "done"
     assert statuses(done) == ["success"]
+
+
+@pytest.mark.parametrize("stage", ["user_wait", "approval_wait"])
+@pytest.mark.parametrize("mode", ["success", "accepted_error", "malformed", "hang"])
+def test_stop_notice_is_once_per_entry_and_does_not_change_stage(
+    board: Board, sender: Sender, monkeypatch: pytest.MonkeyPatch, stage: str, mode: str
+):
+    monkeypatch.setattr(job_delivery, "DELIVERY_TIMEOUT", 0.1)
+    sender.modes(mode)
+    job_id = board.add(prompt=PROMPT)
+    board.set(job_id, stage=stage, wait_reason="synthetic_stop", error="needs judgment")
+    board.scan()
+    stopped = board.get(job_id)
+    assert (stopped.stage, stopped.wait_reason, stopped.error) == (
+        stage,
+        "synthetic_stop",
+        "needs judgment",
+    )
+    text = sender.calls()[0]["text"]
+    for value in (job_id, PROMPT.splitlines()[0], stage, "synthetic_stop", "needs judgment"):
+        assert value in text
+    assert PROMPT.splitlines()[1] not in text
+    commands = [shlex.split(line) for line in text.splitlines() if line.startswith("taskwatch ")]
+    assert [args[3] for args in commands] == ["resume", "approve", "cancel"]
+    assert stopped.notices[0]["status"] == ("success" if mode == "success" else "unknown")
+    board.scan()
+    assert len(sender.calls()) == 1
+    action = "resume" if stage == "user_wait" else "approve"
+    args = next(args for args in commands if args[3] == action)
+    assert cli_main(args[1:]) == 0
+    board.set(job_id, stage=stage, wait_reason="synthetic_stop")
+    board.scan()
+    assert len(sender.calls()) == 2
+    assert len(board.get(job_id).notices) == 2
+
+
+@pytest.mark.parametrize("change", ["output", "missing", "basis", "missing_guideline"])
+@pytest.mark.parametrize("recoveries", [0, 3])
+def test_changed_pass_blocks_delivery_and_spends_recovery_budget(
+    board: Board, sender: Sender, change: str, recoveries: int
+):
+    job = finished_job(board, recoveries=recoveries)
+    path = (
+        Path(next(iter(job.guideline_hashes)))
+        if change == "missing_guideline"
+        else Path(job.intent)
+        if change == "basis"
+        else Path(job.workspace) / "out.txt"
+    )
+    if change in {"missing", "missing_guideline"}:
+        path.unlink()
+    else:
+        path.write_text("changed", encoding="utf-8")
+    with board.jobs.state.lock():
+        job_delivery.deliver_job(board.jobs, board.config, job, board.clock)
+    stale = board.get(job.id)
+    assert stale.stage == ("check" if recoveries < 3 else "user_wait")
+    assert stale.recoveries == min(recoveries + 1, 3)
+    assert stale.resume_stage == "check"
+    assert stale.fingerprint == stale.basis == ""
+    assert stale.deliveries == ()
+    assert not any(Path(call["args"][3]).name == "delivery.txt" for call in sender.calls())
+    if change == "missing_guideline":
+        assert not path.exists()
+
+
+def test_interrupted_notice_is_unknown_without_resend(board: Board, sender: Sender):
+    job_id = board.add()
+    board.set(
+        job_id,
+        stage="user_wait",
+        wait_reason="synthetic_stop",
+        notices=({"entry": 0, "status": "started"},),
+    )
+    board.scan()
+    board.scan()
+    job = board.get(job_id)
+    assert job.stage == "user_wait"
+    assert job.notices[0]["status"] == "unknown"
+    assert sender.calls() == []
+
+
+def test_notice_failure_does_not_block_results_or_job_launch(board: Board, sender: Sender):
+    sender.modes("success", "accepted_error")
+    waiting = board.add()
+    board.set(waiting, stage="user_wait", wait_reason="synthetic_stop")
+    result = finished_job(board)
+    pending = board.add()
+    assert board.scan() == [pending]
+    assert board.get(result.id).stage == "done"
+    assert board.get(waiting).stage == "user_wait"
+    assert board.get(waiting).notices[0]["status"] == "unknown"
+    assert [Path(call["args"][3]).name for call in sender.calls()] == [
+        "delivery.txt",
+        "notice-0.txt",
+    ]
 
 
 def write_config(root: Path, **changes: object) -> None:

@@ -36,6 +36,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Fixed
 
+- Send one stop notice per wait entry and recheck accepted PASS fingerprints before result delivery.
 - Clarify safe plugin updates, default-profile timer pinning, production destinations, review executor responsibility, and user escalation; consolidate operational guidance.
 - The enabled dispatch watch hook reports unreadable board evidence through the same user notification path as `scan`, without leaking the read error.
 - P0 is only a rule break about runtime behavior or data. Style and wording are P2.

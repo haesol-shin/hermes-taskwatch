@@ -94,6 +94,7 @@ class JobState:
     error: str = ""
     guideline_hashes: Mapping[str, str] | None = None
     deliveries: tuple[Mapping, ...] = ()
+    notices: tuple[Mapping, ...] = ()
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -336,12 +337,13 @@ def _validate_record(job: dict) -> None:
             raise RecordError(f"jobs.jsonl: invalid {key}")
     _validate_controls(job)
     _validate_manifest(job)
-    deliveries = job.get("deliveries", [])
-    if not isinstance(deliveries, list) or any(
-        not isinstance(row, dict) or row.get("status") not in {"started", "success", "unknown"}
-        for row in deliveries
-    ):
-        raise RecordError("jobs.jsonl: invalid delivery attempts")
+    for key in ("deliveries", "notices"):
+        attempts = job.get(key, [])
+        if not isinstance(attempts, list) or any(
+            not isinstance(row, dict) or row.get("status") not in {"started", "success", "unknown"}
+            for row in attempts
+        ):
+            raise RecordError(f"jobs.jsonl: invalid {key} attempts")
 
 
 def _validate_controls(job: dict) -> None:

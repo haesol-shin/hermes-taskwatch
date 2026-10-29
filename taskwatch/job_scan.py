@@ -14,7 +14,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .job_delivery import deliver_job
+from .job_delivery import deliver_job, notify_wait
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobState, progress_fingerprint
 
 SLOT_STAGES = frozenset({"work", "check", "review", "fix"})
@@ -159,6 +159,10 @@ class _Scan:
             job = self.all[identifier]
             if _is_pending(job):
                 self._admit(job)
+        # Launch work and deliver results before attempting any stop notices.
+        for job in self.jobs.load().values():
+            if job.stage in {"user_wait", "approval_wait"}:
+                notify_wait(self.jobs, self.config, job, self.now)
         return self.launched
 
     # -- existing jobs ----------------------------------------------------------------------
