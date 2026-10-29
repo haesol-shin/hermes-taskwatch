@@ -307,16 +307,19 @@ workspace, review body file, and check log path) and `delivery-review.txt` in th
 job folder, records the attempt as `started` with the message file and the
 SHA-256 of `delivery.txt`, then runs the command with a fixed 60 second timeout.
 
-Before sending, outputs and review basis are fingerprinted again against the
-accepted PASS. Changed or unreadable evidence returns to `check`, spending the
-existing recovery budget; exhaustion stops at `user_wait/result_unstable`.
+Before sending, the result fingerprint, declared output content digest, and review
+basis must match the accepted PASS. The output digest also covers Git-ignored files.
+Changed, missing, or unreadable evidence returns to `check`, spending the existing
+recovery budget; exhaustion stops at `user_wait/result_unstable`.
 
 After scheduling work and result deliveries, each scan sends one short stop
 notice for every new `user_wait` or `approval_wait` entry through the same
 `deliver_command`, timeout, and success contract. `notice-<index>.txt` names the
 job, first prompt line, stage, wait reason, error, and resume/approve/cancel
-commands. Attempts are recorded in `notices` before sending. No outcome causes
-an automatic retry or changes the stage. Interrupted attempts become unknown.
+commands. Attempts are reserved in `notices` under the state lock before sending.
+The sender runs without that lock; only its notice result is merged into the latest
+snapshot, so unrelated jobs can finish while it waits. No outcome causes an automatic
+retry or changes the stage. Interrupted attempts become unknown.
 `delivery_unknown` receives a separate notice, never a result resend.
 
 For result delivery, success needs exit code 0, a JSON object with a truthy

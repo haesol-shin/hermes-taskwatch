@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .evidence import basis_of
+from .fingerprint import files_fingerprint
 from .job_runner import _fingerprint, _kill_group, _requeue_check, _write_durable
 from .jobs import JobConfig, Jobs, JobState
 
@@ -26,6 +27,8 @@ def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Job
             review.get("ok")
             and review.get("verdict") == "PASS"
             and _fingerprint(job, Path(job.workspace)) == review.get("fingerprint")
+            and files_fingerprint(Path(job.workspace), job.outputs)
+            == review.get("outputs_fingerprint")
             and bool(job.guideline_hashes)
             and basis_of(
                 Path(job.intent), Path(job.spec), tuple(Path(p) for p in job.guideline_hashes)
@@ -161,14 +164,38 @@ def _finish(jobs: Jobs, job: JobState, record: dict, now: float) -> JobState:
 
 
 def notify_wait(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> None:
-    """Attempt once per wait entry, independently of result delivery."""
+    """Reserve under the state lock, send outside it, and merge only the notice."""
+    # A concurrent scan must not mistake a live send for an interrupted attempt.
+    with (jobs.folder(job) / "notice.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        with jobs.state.lock():
+            job = jobs.load()[job.id]
+            if job.stage not in {"user_wait", "approval_wait"}:
+                return
+            index = len(job.notices)
+            record = _reserve_notice(jobs, config, job, now)
+        if record is None:
+            return
+        if record["status"] == "started":
+            record.update(_send(record["command"], lock.fileno()))
+        with jobs.state.lock():
+            latest = jobs.load()[job.id]
+            notices = list(latest.notices)
+            notices[index] = record
+            jobs.save(replace(latest, notices=tuple(notices)), now)
+
+
+def _reserve_notice(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> dict | None:
     # Only resume/approve can leave a wait for another runnable cycle.
     entry = sum(event.get("type") in {"resume", "approve"} for event in job.events)
     if job.notices and job.notices[-1]["entry"] == entry:
         if job.notices[-1]["status"] == "started":
             record = {**job.notices[-1], "status": "unknown", "error": "notice interrupted"}
             jobs.save(replace(job, notices=(*job.notices[:-1], record)), now)
-        return
+        return None
     message = jobs.folder(job) / f"notice-{len(job.notices)}.txt"
     command = [str(message) if part == "{message}" else part for part in config.deliver_command]
     record = {
@@ -209,9 +236,7 @@ def notify_wait(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Non
             + "\n",
         )
         record["message_sha256"] = hashlib.sha256(message.read_bytes()).hexdigest()
-        jobs.save(replace(job, notices=(*job.notices[:-1], record)), now)
-        with message.open("rb") as lock:
-            record.update(_send(command, lock.fileno()))
     except OSError as exc:
         record.update(status="unknown", error=str(exc))
     jobs.save(replace(job, notices=(*job.notices[:-1], record)), now)
+    return record

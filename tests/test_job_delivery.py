@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shlex
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -11,10 +12,13 @@ from pathlib import Path
 import pytest
 
 from taskwatch import job_delivery
+from taskwatch.fingerprint import files_fingerprint
 from taskwatch.job_cli import main as cli_main
 from taskwatch.job_runner import _basis, _fingerprint
 from taskwatch.job_scan import scan_jobs
 from taskwatch.jobs import Jobs, JobState, load_job_config
+from tests.git_fixture import make_repo
+from tests.test_job_runner import GIT, GOOD_FILES, PASS, Env
 from tests.test_job_scan import Board
 
 SENDER = r"""
@@ -164,6 +168,7 @@ def finished_job(board: Board, **changes: object) -> JobState:
                 "verdict": "PASS",
                 "body": REVIEW_BODY,
                 "fingerprint": fingerprint,
+                "outputs_fingerprint": files_fingerprint(workspace, job.outputs),
                 "basis": basis,
             },
         ),
@@ -468,6 +473,54 @@ def test_changed_pass_blocks_delivery_and_spends_recovery_budget(
     assert not any(Path(call["args"][3]).name == "delivery.txt" for call in sender.calls())
     if change == "missing_guideline":
         assert not path.exists()
+
+
+@pytest.mark.parametrize("change", ["unchanged", "changed", "deleted"])
+def test_git_ignored_output_is_checked_at_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sender: Sender,
+    change: str,
+):
+    monkeypatch.delenv("FAKE_JOBS_FILE")
+    repo = make_repo(tmp_path, "repo")
+    env = Env(tmp_path, monkeypatch, kind="code", target=repo)
+    commit = [
+        ["git", "rm", "--cached", "out.txt"],
+        ["git", "add", "-A"],
+        [*GIT, "commit", "-m", "work"],
+    ]
+    env.scenario(
+        [{"writes": {**GOOD_FILES, ".gitignore": "out.txt\n"}, "run": commit}, {"reply": PASS}]
+    )
+    assert env.run("work") == 0
+    assert env.run("check") == 0
+    assert env.run("review") == 0
+    job = env.get()
+    output = env.folder() / "worktree" / "out.txt"
+    assert job.stage == "deliver_pending" and output.is_file()
+    assert (
+        subprocess.run(
+            ["git", "-C", job.workspace, "check-ignore", "out.txt"],
+            check=True,
+            capture_output=True,
+        ).stdout.strip()
+        == b"out.txt"
+    )
+    if change == "changed":
+        output.write_text("ok\nlater\n", encoding="utf-8")
+    elif change == "deleted":
+        output.unlink()
+    config = replace(env.config, deliver_command=sender.command)
+    with env.jobs.state.lock():
+        result = job_delivery.deliver_job(env.jobs, config, job, 3000.0)
+    delivered = [c for c in sender.calls() if Path(c["args"][3]).name == "delivery.txt"]
+    if change == "unchanged":
+        assert result.stage == "done" and len(delivered) == 1
+        return
+    assert result.stage == "check" and result.resume_stage == "check"
+    assert result.fingerprint == result.basis == "" and result.deliveries == ()
+    assert delivered == []
 
 
 def test_interrupted_notice_is_unknown_without_resend(board: Board, sender: Sender):

@@ -541,6 +541,7 @@ def test_job_waits_for_predecessors_to_pass(board: Board) -> None:
                 "ok": True,
                 "verdict": "PASS",
                 "fingerprint": job_runner._fingerprint(job, workspace),
+                "outputs_fingerprint": job_runner.files_fingerprint(workspace, job.outputs),
                 "basis": job_runner._basis(job, board.jobs.folder(job)),
             },
         ),

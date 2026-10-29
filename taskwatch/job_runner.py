@@ -724,6 +724,7 @@ def _judge(ctx: Ctx, body: str) -> dict:
         "blocking": True,
         "reviewer": "",
         "fingerprint": job.fingerprint,
+        "outputs_fingerprint": "",
         "basis": job.basis,
         "body": body,
         "session_path": ctx.jobs.load()[job.id].session_path,
@@ -737,6 +738,7 @@ def _judge(ctx: Ctx, body: str) -> dict:
     try:
         if _fingerprint(job, ctx.workspace) != job.fingerprint:
             record["problems"].append("the result changed during the review")
+        record["outputs_fingerprint"] = files_fingerprint(ctx.workspace, job.outputs)
         if _basis(job, ctx.folder) != job.basis:
             record["problems"].append("the review basis changed during the review")
     except (ValueError, OSError) as exc:
