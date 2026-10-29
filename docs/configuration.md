@@ -153,11 +153,17 @@ directories are suitable only for synthetic tests.
 }
 ```
 
-All keys are required. The three numeric settings are positive integer counts
+All keys shown above are required. The three numeric settings are positive integer counts
 or seconds. `omp_command` is an argument list prefix. Checks use the submission's
 `check_command`, not this model command. `deliver_command` is described in
 [Delivery](#delivery). The draft value
 `["false", "{message}"]` is intentionally disabled: it can never send, so edit it before use.
+
+Optionally add `"review_command": ["executor", "--role", "reviewer"]` to run
+independent reviews with a different command prefix. Like `omp_command`, it must
+be a nonempty list of nonempty strings. When omitted, reviews use `omp_command`;
+work and fix always use `omp_command`. Both commands receive `--mode rpc --no-ui`.
+The `init` draft omits this optional key.
 
 ### Submit an approved job
 

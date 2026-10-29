@@ -435,7 +435,12 @@ class Recorder:
 def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text: bool) -> str:
     timeout = float(ctx.config.rpc_timeout)
     recorder = Recorder(ctx)
-    argv = [*ctx.config.omp_command, "--mode", "rpc", "--no-ui"]
+    command = (
+        ctx.config.review_command
+        if ctx.stage == "review" and ctx.config.review_command is not None
+        else ctx.config.omp_command
+    )
+    argv = [*command, "--mode", "rpc", "--no-ui"]
     stderr = ctx.folder / "logs" / f"omp-a{ctx.job.attempt}.stderr"
     session_dir.mkdir(parents=True, exist_ok=True)
     watcher = threading.Thread(target=recorder.watch, daemon=True)

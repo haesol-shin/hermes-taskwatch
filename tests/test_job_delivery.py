@@ -571,6 +571,35 @@ def write_config(root: Path, **changes: object) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
+@pytest.mark.parametrize("command", [None, ["executor", "--role", "reviewer"]])
+def test_config_accepts_optional_review_command(tmp_path: Path, command):
+    write_config(tmp_path, review_command=command)
+    config = load_job_config(tmp_path)
+    assert config.review_command == (tuple(command) if command is not None else None)
+    assert config.omp_command == ("omp",)
+
+
+@pytest.mark.parametrize("command", [None, [], "executor", ["executor", ""], [" "], [1]])
+def test_config_refuses_invalid_review_command(tmp_path: Path, command):
+    write_config(tmp_path)
+    path = tmp_path / "taskwatch" / "jobs-config.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["review_command"] = command
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="review_command"):
+        load_job_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["version", "slots", "stall_seconds", "omp_command", "rpc_timeout", "deliver_command"],
+)
+def test_review_command_does_not_replace_required_config_keys(tmp_path: Path, key):
+    write_config(tmp_path, review_command=["executor"], **{key: None})
+    with pytest.raises(ValueError):
+        load_job_config(tmp_path)
+
+
 def test_config_requires_the_delivery_command(tmp_path: Path):
     write_config(tmp_path, deliver_command=None)
     with pytest.raises(ValueError):
