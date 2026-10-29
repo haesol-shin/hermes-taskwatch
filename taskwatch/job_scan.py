@@ -1,9 +1,9 @@
 """Timer scan for the independent job board: admit, launch, recover, stop.
 
-One scan holds the State lock end to end, so a runner service cannot change a job while the
-scan decides on its snapshot. A step is one systemd service. The runner marks a finished step
-by setting ``ended_at`` together with the next stage; the scan then launches that next step
-under a new attempt while the job keeps its slot and target.
+Scheduling holds the State lock so a runner cannot change the snapshot mid-decision.
+Stop notice senders run after releasing it. A step is one systemd service. The runner
+marks a finished step by setting ``ended_at`` together with the next stage; the scan
+then launches that next step under a new attempt while the job keeps its slot and target.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .job_delivery import deliver_job
+from .job_delivery import deliver_job, notify_wait
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobState, progress_fingerprint
 
 SLOT_STAGES = frozenset({"work", "check", "review", "fix"})
@@ -128,7 +128,13 @@ def scan_jobs(
         service if service is not None else Systemd(jobs.state.root),
     )
     with jobs.state.lock():
-        return scan.run()
+        launched = scan.run()
+        waiting = [
+            job for job in jobs.load().values() if job.stage in {"user_wait", "approval_wait"}
+        ]
+    for job in waiting:
+        notify_wait(jobs, config, job, scan.now)
+    return launched
 
 
 class _Scan:

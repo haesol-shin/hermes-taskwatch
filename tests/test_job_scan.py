@@ -522,13 +522,34 @@ def test_cancelled_job_holds_slot_until_stop_is_confirmed(tmp_path: Path) -> Non
 
 
 def test_job_waits_for_predecessors_to_pass(board: Board) -> None:
-    first = board.add()
+    first = board.add(kind="document")
     second = board.add(predecessors=[first])
     assert board.scan() == [first]
     assert board.get(second).wait_reason == f"predecessor:{first}"
     board.finish_step(first, "review")
     assert board.scan() == [first]
     assert board.get(second).stage == "queued"
+    job = board.get(first)
+    workspace = board.jobs.folder(job) / "work"
+    workspace.mkdir()
+    (workspace / "out.txt").write_text("accepted result", encoding="utf-8")
+    board.set(
+        first,
+        workspace=str(workspace),
+        reviews=(
+            {
+                "ok": True,
+                "verdict": "PASS",
+                "fingerprint": job_runner._fingerprint(job, workspace),
+                "outputs_fingerprint": job_runner.files_fingerprint(workspace, job.outputs),
+                "basis": job_runner._basis(job, board.jobs.folder(job)),
+            },
+        ),
+        guideline_hashes={
+            str(p): job_runner._file_sha(p)
+            for p in (board.jobs.folder(job) / "review-docs").iterdir()
+        },
+    )
     board.finish_step(first, "deliver_pending")
     assert board.scan() == [second]
 

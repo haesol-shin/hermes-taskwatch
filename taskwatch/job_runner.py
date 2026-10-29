@@ -435,7 +435,12 @@ class Recorder:
 def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text: bool) -> str:
     timeout = float(ctx.config.rpc_timeout)
     recorder = Recorder(ctx)
-    argv = [*ctx.config.omp_command, "--mode", "rpc", "--no-ui"]
+    command = (
+        ctx.config.review_command
+        if ctx.stage == "review" and ctx.config.review_command is not None
+        else ctx.config.omp_command
+    )
+    argv = [*command, "--mode", "rpc", "--no-ui"]
     stderr = ctx.folder / "logs" / f"omp-a{ctx.job.attempt}.stderr"
     session_dir.mkdir(parents=True, exist_ok=True)
     watcher = threading.Thread(target=recorder.watch, daemon=True)
@@ -724,6 +729,7 @@ def _judge(ctx: Ctx, body: str) -> dict:
         "blocking": True,
         "reviewer": "",
         "fingerprint": job.fingerprint,
+        "outputs_fingerprint": "",
         "basis": job.basis,
         "body": body,
         "session_path": ctx.jobs.load()[job.id].session_path,
@@ -737,6 +743,7 @@ def _judge(ctx: Ctx, body: str) -> dict:
     try:
         if _fingerprint(job, ctx.workspace) != job.fingerprint:
             record["problems"].append("the result changed during the review")
+        record["outputs_fingerprint"] = files_fingerprint(ctx.workspace, job.outputs)
         if _basis(job, ctx.folder) != job.basis:
             record["problems"].append("the review basis changed during the review")
     except (ValueError, OSError) as exc:

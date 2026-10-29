@@ -5,6 +5,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 ## [Unreleased]
 
 ### Added
+- Optional `review_command` selects a separate executor command for independent job reviews, falling back to `omp_command` when omitted.
 - Standalone approved job submission, parallel timer scheduling, transient omp RPC runs, interruption recovery, command checks, capped independent review fixes, and configured result delivery from `deliver_pending` to `done` through a literal-argument command with a fixed 60 second timeout. Only confirmed sends finish; every other outcome stops for user judgment without automatic resend. The existing Hermes plugin remains available.
 - `taskwatch_approve` records conversational start and apply approvals without hand-written JSON; retries return the existing approval and apply refuses a stale or dirty result.
 - `scan` warns through the configured user destination when the board is unreadable and exits 1; config failures exit 1 with the file and cause on stderr for the timer journal.
@@ -36,6 +37,8 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Fixed
 
+- Verify declared output contents, including Git-ignored files, against PASS before delivery, and send stop notices without holding the global state lock.
+- Send one stop notice per wait entry and recheck accepted PASS fingerprints before result delivery.
 - Clarify safe plugin updates, default-profile timer pinning, production destinations, review executor responsibility, and user escalation; consolidate operational guidance.
 - The enabled dispatch watch hook reports unreadable board evidence through the same user notification path as `scan`, without leaking the read error.
 - P0 is only a rule break about runtime behavior or data. Style and wording are P2.

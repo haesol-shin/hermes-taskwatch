@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import shlex
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -10,9 +12,13 @@ from pathlib import Path
 import pytest
 
 from taskwatch import job_delivery
+from taskwatch.fingerprint import files_fingerprint
 from taskwatch.job_cli import main as cli_main
+from taskwatch.job_runner import _basis, _fingerprint
 from taskwatch.job_scan import scan_jobs
 from taskwatch.jobs import Jobs, JobState, load_job_config
+from tests.git_fixture import make_repo
+from tests.test_job_runner import GIT, GOOD_FILES, PASS, Env
 from tests.test_job_scan import Board
 
 SENDER = r"""
@@ -137,7 +143,7 @@ def board(tmp_path: Path, sender: Sender) -> Board:
 
 def finished_job(board: Board, **changes: object) -> JobState:
     """A job whose review passed and whose step service is already released."""
-    job_id = board.add(prompt=PROMPT)
+    job_id = board.add(prompt=PROMPT, kind="document")
     folder = board.jobs.folder(board.get(job_id))
     workspace = folder / "work"
     workspace.mkdir(parents=True)
@@ -145,6 +151,9 @@ def finished_job(board: Board, **changes: object) -> JobState:
     log = folder / "logs" / "check-1.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("all green", encoding="utf-8")
+    job = replace(board.get(job_id), workspace=str(workspace))
+    fingerprint = _fingerprint(job, workspace)
+    basis = _basis(job, folder)
     board.set(
         job_id,
         stage="deliver_pending",
@@ -152,7 +161,23 @@ def finished_job(board: Board, **changes: object) -> JobState:
         workspace=str(workspace),
         ended_at=board.clock,
         checks=({"seq": 1, "ok": True, "exit_code": 0, "log": str(log)},),
-        reviews=({"seq": 2, "ok": True, "verdict": "PASS", "body": REVIEW_BODY},),
+        reviews=(
+            {
+                "seq": 2,
+                "ok": True,
+                "verdict": "PASS",
+                "body": REVIEW_BODY,
+                "fingerprint": fingerprint,
+                "outputs_fingerprint": files_fingerprint(workspace, job.outputs),
+                "basis": basis,
+            },
+        ),
+        fingerprint=fingerprint,
+        basis=basis,
+        guideline_hashes={
+            str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in (folder / "review-docs").iterdir()
+        },
         **changes,
     )
     return board.get(job_id)
@@ -241,7 +266,9 @@ def test_acceptance_followed_by_an_error_is_unknown_and_never_resent(board: Boar
         "error": "Telegram send failed: Timed out"
     }
     board.scan()
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
+    assert "delivery_unknown" in sender.calls()[1]["text"]
+    assert stopped.notices[0]["status"] == "success"
     assert (sender.dir / "accepted").read_text(encoding="utf-8") == "accepted\n"
     assert board.get(job.id) == stopped
 
@@ -258,7 +285,8 @@ def test_timeout_is_unknown_and_never_resent(
     assert statuses(parked) == ["unknown"]
     board.scan()
     board.scan()
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
+    assert board.get(job.id).notices[0]["status"] == "unknown"
     assert board.get(job.id).stage == "user_wait"
 
 
@@ -272,7 +300,7 @@ def test_an_unprovable_outcome_is_unknown_and_never_resent(board: Board, sender:
     assert statuses(parked) == ["unknown"]
     board.scan()
     board.scan()
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
     assert board.get(job.id).stage == "user_wait"
 
 
@@ -288,15 +316,16 @@ def test_an_interrupted_started_attempt_is_unknown_and_not_resent(board: Board, 
     board.scan()
     parked = board.get(job.id)
     assert (parked.stage, parked.wait_reason) == ("user_wait", "delivery_unknown")
-    assert sender.calls() == []
+    assert len(sender.calls()) == 1
+    assert "delivery_unknown" in sender.calls()[0]["text"]
     board.scan()
-    assert sender.calls() == []
+    assert len(sender.calls()) == 1
     cli(board, "resume", job.id)
     board.scan()
     done = board.get(job.id)
     assert done.stage == "done"
     assert statuses(done) == ["unknown", "success"]
-    assert len(sender.calls()) == 1
+    assert len(sender.calls()) == 2
 
 
 def test_a_running_unit_defers_delivery_until_it_is_released(board: Board, sender: Sender):
@@ -325,10 +354,10 @@ def test_resume_after_unknown_sends_once_without_rerunning_work(board: Board, se
     done = board.get(job.id)
     assert done.stage == "done"
     assert statuses(done) == ["unknown", "success"]
-    assert len(sender.calls()) == 2
+    assert len(sender.calls()) == 3
     assert board.service.started == []
     board.scan()
-    assert len(sender.calls()) == 2
+    assert len(sender.calls()) == 3
     assert done.attempt == job.attempt
 
 
@@ -382,6 +411,150 @@ def test_concurrent_scans_send_exactly_once(board: Board, sender: Sender):
     assert statuses(done) == ["success"]
 
 
+@pytest.mark.parametrize("stage", ["user_wait", "approval_wait"])
+@pytest.mark.parametrize("mode", ["success", "accepted_error", "malformed", "hang"])
+def test_stop_notice_is_once_per_entry_and_does_not_change_stage(
+    board: Board, sender: Sender, monkeypatch: pytest.MonkeyPatch, stage: str, mode: str
+):
+    monkeypatch.setattr(job_delivery, "DELIVERY_TIMEOUT", 0.1)
+    sender.modes(mode)
+    job_id = board.add(prompt=PROMPT)
+    board.set(job_id, stage=stage, wait_reason="synthetic_stop", error="needs judgment")
+    board.scan()
+    stopped = board.get(job_id)
+    assert (stopped.stage, stopped.wait_reason, stopped.error) == (
+        stage,
+        "synthetic_stop",
+        "needs judgment",
+    )
+    text = sender.calls()[0]["text"]
+    for value in (job_id, PROMPT.splitlines()[0], stage, "synthetic_stop", "needs judgment"):
+        assert value in text
+    assert PROMPT.splitlines()[1] not in text
+    commands = [shlex.split(line) for line in text.splitlines() if line.startswith("taskwatch ")]
+    assert [args[3] for args in commands] == ["resume", "approve", "cancel"]
+    assert stopped.notices[0]["status"] == ("success" if mode == "success" else "unknown")
+    board.scan()
+    assert len(sender.calls()) == 1
+    action = "resume" if stage == "user_wait" else "approve"
+    args = next(args for args in commands if args[3] == action)
+    assert cli_main(args[1:]) == 0
+    board.set(job_id, stage=stage, wait_reason="synthetic_stop")
+    board.scan()
+    assert len(sender.calls()) == 2
+    assert len(board.get(job_id).notices) == 2
+
+
+@pytest.mark.parametrize("change", ["output", "missing", "basis", "missing_guideline"])
+@pytest.mark.parametrize("recoveries", [0, 3])
+def test_changed_pass_blocks_delivery_and_spends_recovery_budget(
+    board: Board, sender: Sender, change: str, recoveries: int
+):
+    job = finished_job(board, recoveries=recoveries)
+    path = (
+        Path(next(iter(job.guideline_hashes)))
+        if change == "missing_guideline"
+        else Path(job.intent)
+        if change == "basis"
+        else Path(job.workspace) / "out.txt"
+    )
+    if change in {"missing", "missing_guideline"}:
+        path.unlink()
+    else:
+        path.write_text("changed", encoding="utf-8")
+    with board.jobs.state.lock():
+        job_delivery.deliver_job(board.jobs, board.config, job, board.clock)
+    stale = board.get(job.id)
+    assert stale.stage == ("check" if recoveries < 3 else "user_wait")
+    assert stale.recoveries == min(recoveries + 1, 3)
+    assert stale.resume_stage == "check"
+    assert stale.fingerprint == stale.basis == ""
+    assert stale.deliveries == ()
+    assert not any(Path(call["args"][3]).name == "delivery.txt" for call in sender.calls())
+    if change == "missing_guideline":
+        assert not path.exists()
+
+
+@pytest.mark.parametrize("change", ["unchanged", "changed", "deleted"])
+def test_git_ignored_output_is_checked_at_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sender: Sender,
+    change: str,
+):
+    monkeypatch.delenv("FAKE_JOBS_FILE")
+    repo = make_repo(tmp_path, "repo")
+    env = Env(tmp_path, monkeypatch, kind="code", target=repo)
+    commit = [
+        ["git", "rm", "--cached", "out.txt"],
+        ["git", "add", "-A"],
+        [*GIT, "commit", "-m", "work"],
+    ]
+    env.scenario(
+        [{"writes": {**GOOD_FILES, ".gitignore": "out.txt\n"}, "run": commit}, {"reply": PASS}]
+    )
+    assert env.run("work") == 0
+    assert env.run("check") == 0
+    assert env.run("review") == 0
+    job = env.get()
+    output = env.folder() / "worktree" / "out.txt"
+    assert job.stage == "deliver_pending" and output.is_file()
+    assert (
+        subprocess.run(
+            ["git", "-C", job.workspace, "check-ignore", "out.txt"],
+            check=True,
+            capture_output=True,
+        ).stdout.strip()
+        == b"out.txt"
+    )
+    if change == "changed":
+        output.write_text("ok\nlater\n", encoding="utf-8")
+    elif change == "deleted":
+        output.unlink()
+    config = replace(env.config, deliver_command=sender.command)
+    with env.jobs.state.lock():
+        result = job_delivery.deliver_job(env.jobs, config, job, 3000.0)
+    delivered = [c for c in sender.calls() if Path(c["args"][3]).name == "delivery.txt"]
+    if change == "unchanged":
+        assert result.stage == "done" and len(delivered) == 1
+        return
+    assert result.stage == "check" and result.resume_stage == "check"
+    assert result.fingerprint == result.basis == "" and result.deliveries == ()
+    assert delivered == []
+
+
+def test_interrupted_notice_is_unknown_without_resend(board: Board, sender: Sender):
+    job_id = board.add()
+    board.set(
+        job_id,
+        stage="user_wait",
+        wait_reason="synthetic_stop",
+        notices=({"entry": 0, "status": "started"},),
+    )
+    board.scan()
+    board.scan()
+    job = board.get(job_id)
+    assert job.stage == "user_wait"
+    assert job.notices[0]["status"] == "unknown"
+    assert sender.calls() == []
+
+
+def test_notice_failure_does_not_block_results_or_job_launch(board: Board, sender: Sender):
+    sender.modes("success", "accepted_error")
+    waiting = board.add()
+    board.set(waiting, stage="user_wait", wait_reason="synthetic_stop")
+    result = finished_job(board)
+    pending = board.add()
+    assert board.scan() == [pending]
+    assert board.get(result.id).stage == "done"
+    assert board.get(waiting).stage == "user_wait"
+    assert board.get(waiting).notices[0]["status"] == "unknown"
+    assert [Path(call["args"][3]).name for call in sender.calls()] == [
+        "delivery.txt",
+        "notice-0.txt",
+    ]
+
+
 def write_config(root: Path, **changes: object) -> None:
     data = {
         "version": 1,
@@ -396,6 +569,35 @@ def write_config(root: Path, **changes: object) -> None:
     path = root / "taskwatch" / "jobs-config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize("command", [None, ["executor", "--role", "reviewer"]])
+def test_config_accepts_optional_review_command(tmp_path: Path, command):
+    write_config(tmp_path, review_command=command)
+    config = load_job_config(tmp_path)
+    assert config.review_command == (tuple(command) if command is not None else None)
+    assert config.omp_command == ("omp",)
+
+
+@pytest.mark.parametrize("command", [None, [], "executor", ["executor", ""], [" "], [1]])
+def test_config_refuses_invalid_review_command(tmp_path: Path, command):
+    write_config(tmp_path)
+    path = tmp_path / "taskwatch" / "jobs-config.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["review_command"] = command
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="review_command"):
+        load_job_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["version", "slots", "stall_seconds", "omp_command", "rpc_timeout", "deliver_command"],
+)
+def test_review_command_does_not_replace_required_config_keys(tmp_path: Path, key):
+    write_config(tmp_path, review_command=["executor"], **{key: None})
+    with pytest.raises(ValueError):
+        load_job_config(tmp_path)
 
 
 def test_config_requires_the_delivery_command(tmp_path: Path):

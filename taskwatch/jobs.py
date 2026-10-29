@@ -94,6 +94,7 @@ class JobState:
     error: str = ""
     guideline_hashes: Mapping[str, str] | None = None
     deliveries: tuple[Mapping, ...] = ()
+    notices: tuple[Mapping, ...] = ()
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -112,12 +113,13 @@ class JobConfig:
     omp_command: tuple[str, ...] = ("omp",)
     rpc_timeout: int = 3600
     deliver_command: tuple[str, ...] = ("false", "{message}")
+    review_command: tuple[str, ...] | None = None
 
 
 def load_job_config(root: Path) -> JobConfig:
     path = root / "taskwatch" / "jobs-config.json"
     obj = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(obj, dict) or set(obj) != {
+    if not isinstance(obj, dict) or set(obj) - {"review_command"} != {
         "version",
         "slots",
         "stall_seconds",
@@ -135,6 +137,8 @@ def load_job_config(root: Path) -> JobConfig:
         if type(obj[key]) is not int or obj[key] < 1:
             raise ValueError(f"{key} must be a positive integer")
     _strings(obj["omp_command"], "omp_command", nonempty=True)
+    if "review_command" in obj:
+        _strings(obj["review_command"], "review_command", nonempty=True)
     _strings(obj["deliver_command"], "deliver_command", nonempty=True)
     command = obj["deliver_command"]
     if command.count("{message}") != 1 or any(
@@ -147,6 +151,7 @@ def load_job_config(root: Path) -> JobConfig:
         tuple(obj["omp_command"]),
         obj["rpc_timeout"],
         tuple(command),
+        tuple(obj["review_command"]) if "review_command" in obj else None,
     )
 
 
@@ -336,12 +341,13 @@ def _validate_record(job: dict) -> None:
             raise RecordError(f"jobs.jsonl: invalid {key}")
     _validate_controls(job)
     _validate_manifest(job)
-    deliveries = job.get("deliveries", [])
-    if not isinstance(deliveries, list) or any(
-        not isinstance(row, dict) or row.get("status") not in {"started", "success", "unknown"}
-        for row in deliveries
-    ):
-        raise RecordError("jobs.jsonl: invalid delivery attempts")
+    for key in ("deliveries", "notices"):
+        attempts = job.get(key, [])
+        if not isinstance(attempts, list) or any(
+            not isinstance(row, dict) or row.get("status") not in {"started", "success", "unknown"}
+            for row in attempts
+        ):
+            raise RecordError(f"jobs.jsonl: invalid {key} attempts")
 
 
 def _validate_controls(job: dict) -> None:

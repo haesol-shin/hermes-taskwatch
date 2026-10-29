@@ -153,11 +153,17 @@ directories are suitable only for synthetic tests.
 }
 ```
 
-All keys are required. The three numeric settings are positive integer counts
+All keys shown above are required. The three numeric settings are positive integer counts
 or seconds. `omp_command` is an argument list prefix. Checks use the submission's
 `check_command`, not this model command. `deliver_command` is described in
 [Delivery](#delivery). The draft value
 `["false", "{message}"]` is intentionally disabled: it can never send, so edit it before use.
+
+Optionally add `"review_command": ["executor", "--role", "reviewer"]` to run
+independent reviews with a different command prefix. Like `omp_command`, it must
+be a nonempty list of nonempty strings. When omitted, reviews use `omp_command`;
+work and fix always use `omp_command`. Both commands receive `--mode rpc --no-ui`.
+The `init` draft omits this optional key.
 
 ### Submit an approved job
 
@@ -307,8 +313,23 @@ workspace, review body file, and check log path) and `delivery-review.txt` in th
 job folder, records the attempt as `started` with the message file and the
 SHA-256 of `delivery.txt`, then runs the command with a fixed 60 second timeout.
 
-Success needs exit code 0, a JSON object with a truthy `success`, no `error`, and
-a present `message_id`. Then the job becomes `done` and is never sent again.
+Before sending, the result fingerprint, declared output content digest, and review
+basis must match the accepted PASS. The output digest also covers Git-ignored files.
+Changed, missing, or unreadable evidence returns to `check`, spending the existing
+recovery budget; exhaustion stops at `user_wait/result_unstable`.
+
+After scheduling work and result deliveries, each scan sends one short stop
+notice for every new `user_wait` or `approval_wait` entry through the same
+`deliver_command`, timeout, and success contract. `notice-<index>.txt` names the
+job, first prompt line, stage, wait reason, error, and resume/approve/cancel
+commands. Attempts are reserved in `notices` under the state lock before sending.
+The sender runs without that lock; only its notice result is merged into the latest
+snapshot, so unrelated jobs can finish while it waits. No outcome causes an automatic
+retry or changes the stage. Interrupted attempts become unknown.
+`delivery_unknown` receives a separate notice, never a result resend.
+
+For result delivery, success needs exit code 0, a JSON object with a truthy
+`success`, no `error`, and a present `message_id`. Then the job becomes `done` and is never sent again.
 Success means the command reported acceptance; it is not a read receipt. A
 response with only `skipped` is unknown, not done.
 
@@ -349,8 +370,8 @@ Wait and cancel fence late output immediately. The scanner confirms service
 termination before reusing the slot or target. Approval resumes the saved step;
 an explicit user resume opens a new recovery/fix cycle. Resuming a review fix
 reserves its first round before launch. Check repairs keep the separate recovery
-budget. Only the delivery step sends a message; other commands do not. External
-outcome reconciliation is outside this version.
+budget. Commands do not send messages themselves; scans send results and stop
+notices. External outcome reconciliation is outside this version.
 
 `approve --scope` records a replacement approved scope together with the approval
 source. Omit it to preserve the original scope, such as an initial approval wait.

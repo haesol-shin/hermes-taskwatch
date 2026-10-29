@@ -306,6 +306,28 @@ def test_cancelled_attempt_exits_promptly_and_writes_nothing(env, monkeypatch):
 # --- review ---------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("separate_review", [False, True])
+def test_review_command_keeps_work_and_fix_on_the_work_command(env, separate_review):
+    work_command = (*env.config.omp_command, "--executor", "worker")
+    review_command = (*env.config.omp_command, "--executor", "reviewer")
+    env.config = replace(
+        env.config,
+        omp_command=work_command,
+        review_command=review_command if separate_review else None,
+    )
+    env.scenario([work_turn(), {"reply": f"{FAIL}\nP1: revise"}, work_turn()])
+    assert env.run("work") == 0
+    assert env.run("check") == 0
+    assert env.run("review") == 0
+    assert env.get().stage == "fix"
+    assert env.run("fix") == 0
+    assert env.get().stage == "check"
+    argv = [entry["argv"] for entry in env.log() if "argv" in entry]
+    worker = ["--executor", "worker", "--mode", "rpc", "--no-ui"]
+    reviewer = ["--executor", "reviewer", "--mode", "rpc", "--no-ui"]
+    assert argv == [worker, reviewer if separate_review else worker, worker]
+
+
 def test_review_failure_counts_a_round_and_failed_fix_keeps_it(env):
     env.scenario([{"reply": f"{FAIL}\nP1: wrong"}, {"die": True}])
     env.to_review()
