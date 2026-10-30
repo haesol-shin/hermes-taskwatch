@@ -5,6 +5,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 ## [Unreleased]
 
 ### Added
+- Code jobs start from a freshly fetched `origin/<default branch>` on a named branch (`<branch_prefix><id8>`, default `taskwatch/`), record `base`, `base_note`, `branch`, `workspace_state` and `branch_state`, and accept an optional `base` field for stacked work. The scan removes a clean worktree at `done` and `cancelled`, keeps a dirty one with the reason, and deletes the branch only once it is merged or squash merged into `origin/<default branch>`.
 - Optional `env` object in `jobs-config.json` sets the environment of every process a job starts (omp worker, reviewer, check command, runner git commands); `PATH` entries expand `~`, `$HOME` and `$PATH`, so jobs find tools in `~/.local/bin` without per-job approval.
 - A job keeps its checklist and progress files in its job folder instead of the worktree, and the worker prompt gives their absolute paths, so records are never committed into a result and the clean-tree check needs no exception. Records that name `.taskwatch/...` still load.
 - `taskwatch watch <job>` blocks until a job reaches `approval_wait`, `user_wait`, `deliver_pending`, `done`, or `cancelled`, prints a short report, and exits (0 attention, 3 time limit, 2 unknown job). It reads `jobs.jsonl` without a lock or write and parses only new lines per poll, so a Hermes background process can wake the room that started the work.
@@ -35,6 +36,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Changed
 
+- Code jobs that build a result no longer wait for each other on one target, since each has its own branch and worktree; the slot limit still applies, and non-code and review-only jobs on one target still wait.
 - The plugin no longer changes environment variables, reads Hermes source, or writes the board database directly; profile and paths come from the plugin context and Hermes helpers.
 - Generated timer units pin the configured profile with `-p`, and the apply example requires `HERMES_PROFILE`.
 - `plugin.yaml` declares `taskwatch_approve`.

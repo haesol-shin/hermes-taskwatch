@@ -15,6 +15,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from .job_delivery import deliver_job, notify_wait
+from .job_env import job_environment
+from .job_workspace import settle
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobState, progress_fingerprint
 
 SLOT_STAGES = frozenset({"work", "check", "review", "fix"})
@@ -145,6 +147,7 @@ class _Scan:
         self.boot = boot
         self.service = service
         self.launched: list[str] = []
+        self.fetched: set[str] = set()
         self.all: dict[str, JobState] = {}
         self.order: list[str] = []
 
@@ -184,6 +187,22 @@ class _Scan:
             self._save(self._event(job, "approval_wait"))
         if job.stage == "deliver_pending" and not job.unit:
             self.all[job.id] = deliver_job(self.jobs, self.config, job, self.now)
+        self._settle(self.all[job.id])
+
+    def _settle(self, job: JobState) -> None:
+        """Remove a finished job's clean worktree and its integrated branch; keep the rest.
+
+        Only `done` and `cancelled` qualify: at `deliver_pending` the result is still unsent.
+        A job whose unit is not yet confirmed dead may still use the folder.
+        """
+        if job.stage not in {"done", "cancelled"} or job.unit:
+            return
+        try:
+            changes = settle(job, job_environment(self.config.env), self.fetched)
+        except (OSError, subprocess.SubprocessError):
+            return  # Retried by the next scan; one repository must not stop the others.
+        if changes:
+            self._save(replace(job, **changes))
 
     def _confirm_dead(self, job: JobState) -> bool:
         """True when the job's whole old service is dead; never assumed, even after a reboot."""
@@ -281,13 +300,13 @@ class _Scan:
             if pred not in self.all or self.all[pred].stage not in DONE_STAGES:
                 return f"predecessor:{pred}"
         slots, targets = self._busy()
-        if job.target and job.target in targets:
+        if _shared_target(job) and job.target in targets:
             return "target"
         return "slot" if slots >= self.config.slots else None
 
     def _busy(self) -> tuple[int, set[str]]:
         held = [job for job in self.all.values() if _holds(job)]
-        return len(held), {job.target for job in held if job.target}
+        return len(held), {job.target for job in held if job.target and _shared_target(job)}
 
     def _launch(self, job: JobState, stage: str) -> None:
         try:
@@ -339,6 +358,12 @@ class _Scan:
 
 def _rank(job: JobState) -> tuple[float, str]:
     return job.last_progress_at, job.id
+
+
+def _shared_target(job: JobState) -> bool:
+    """A code job that builds a result works in its own worktree; every other job reads or
+    writes the target folder itself, so two of them must not run on one target."""
+    return not (job.review == "code" and job.review_target is None)
 
 
 def _holds(job: JobState) -> bool:

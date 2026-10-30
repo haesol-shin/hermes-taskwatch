@@ -36,6 +36,9 @@ _OLD_KINDS = {"code": "code", "design": "design", "document": "source", "researc
 MAX_FIX_ROUNDS = 3
 MAX_RECOVERIES = 3
 
+DEFAULT_BRANCH_PREFIX = "taskwatch/"
+_PREFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(/[A-Za-z0-9][A-Za-z0-9_-]*)*[/-]?")
+
 
 def _freeze(value):
     if isinstance(value, Mapping):
@@ -101,6 +104,13 @@ class JobState:
     notices: tuple[Mapping, ...] = ()
     # Set for a review-only job: {"files": [...]} relative to target, or {"commit": full sha}.
     review_target: Mapping | None = None
+    # Code jobs. `base` is the optional starting commit or branch at submit and the commit
+    # actually used once the work folder exists. The states are empty on older records.
+    base: str = ""
+    base_note: str = ""
+    branch: str = ""
+    workspace_state: str = ""
+    branch_state: str = ""
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -121,12 +131,13 @@ class JobConfig:
     deliver_command: tuple[str, ...] = ("false", "{message}")
     review_command: tuple[str, ...] | None = None
     env: Mapping[str, str] = field(default_factory=dict)
+    branch_prefix: str = DEFAULT_BRANCH_PREFIX
 
 
 def load_job_config(root: Path) -> JobConfig:
     path = root / "taskwatch" / "jobs-config.json"
     obj = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(obj, dict) or set(obj) - {"review_command", "env"} != {
+    if not isinstance(obj, dict) or set(obj) - {"review_command", "env", "branch_prefix"} != {
         "version",
         "slots",
         "stall_seconds",
@@ -147,6 +158,9 @@ def load_job_config(root: Path) -> JobConfig:
     if "review_command" in obj:
         _strings(obj["review_command"], "review_command", nonempty=True)
     env = validate_env(obj["env"]) if "env" in obj else {}
+    prefix = obj.get("branch_prefix", DEFAULT_BRANCH_PREFIX)
+    if not isinstance(prefix, str) or not _PREFIX.fullmatch(prefix):
+        raise ValueError("branch_prefix must be letters, digits, '_' and '-' parts joined by '/'")
     _strings(obj["deliver_command"], "deliver_command", nonempty=True)
     command = obj["deliver_command"]
     if command.count("{message}") != 1 or any(
@@ -161,6 +175,7 @@ def load_job_config(root: Path) -> JobConfig:
         tuple(command),
         tuple(obj["review_command"]) if "review_command" in obj else None,
         env,
+        prefix,
     )
 
 
@@ -281,7 +296,7 @@ _COMMON_FIELDS = {
     "spec",
 }
 _WORK_FIELDS = {"outputs", "check_command", "checklist", "progress"}
-_OPTIONAL_FIELDS = {"inputs", "predecessors", "expected_wait_seconds", "approval_required"}
+_OPTIONAL_FIELDS = {"inputs", "predecessors", "expected_wait_seconds", "approval_required", "base"}
 
 
 def _submission(payload: dict) -> dict:
@@ -307,6 +322,8 @@ def _submission(payload: dict) -> dict:
         _review_fields(data)
     else:
         _work_fields(data)
+    if "base" in data:
+        _base_field(data, review_only)
     data.setdefault("predecessors", [])
     _strings(data["predecessors"], "predecessors")
     data.setdefault("expected_wait_seconds", 0)
@@ -322,6 +339,14 @@ def _submission(payload: dict) -> dict:
         _strings(paths, role)
     data["inputs"] = {role: list(paths) for role, paths in inputs.items()}
     return data
+
+
+def _base_field(data: dict, review_only: bool) -> None:
+    base = data["base"]
+    if not isinstance(base, str) or not base.strip() or base.startswith("-"):
+        raise ValueError("base must be a commit or branch name")
+    if data["review"] != "code" or review_only:
+        raise ValueError("base applies only to code jobs that build a result")
 
 
 def _work_fields(data: dict) -> None:
@@ -460,6 +485,9 @@ def _validate_controls(job: dict) -> None:
         "resume_stage",
     ):
         if not isinstance(job.get(key), str):
+            raise RecordError(f"jobs.jsonl: invalid {key}")
+    for key in ("base", "base_note", "branch", "workspace_state", "branch_state"):
+        if not isinstance(job.get(key, ""), str):
             raise RecordError(f"jobs.jsonl: invalid {key}")
     if job["resume_stage"] not in STAGES:
         raise RecordError("jobs.jsonl: invalid resume stage")
