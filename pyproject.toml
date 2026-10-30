@@ -1,7 +1,7 @@
 [project]
 name = "hermes-taskwatch"
 version = "0.0.0"
-description = "Hermes Agent Kanban plugin: delegate and walk away. Nothing gets dropped, nothing unchecked gets through."
+description = "Standalone job runner for approved agent work: schedule, check, review, and deliver."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

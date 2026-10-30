@@ -19,7 +19,7 @@ Run all four before you report a change as done.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) first. It is the source for code style, commits, and pull requests.
 - No runtime dependencies. Standard library only.
 - Checks never call a model.
-- Do not import Hermes in check code. Board access goes through the `Protocol` in the package, so tests use a fake board.
+- Do not import Hermes. The runner stays standalone.
 - Keep the change minimal. Do not refactor unrelated code.
 - Tests use synthetic fixtures. Use `.invalid` hosts and placeholder paths, never real accounts, chat ids, or local paths.
 
