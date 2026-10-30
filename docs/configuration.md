@@ -165,6 +165,16 @@ be a nonempty list of nonempty strings. When omitted, reviews use `omp_command`;
 work and fix always use `omp_command`. Both commands receive `--mode rpc --no-ui`.
 The `init` draft omits this optional key.
 
+In `review_command` (and only there), an argument that is exactly `{guidelines}` becomes the
+job's own copy of the review guidelines, and exactly `{kind}` becomes the job kind. That lets
+the review command be the [reviewer launcher](review-launch.md), which reads the agent
+definition and those guidelines when the review starts:
+
+```json
+"review_command": ["python3", "-m", "taskwatch.reviewer_launch", "--agent", "/srv/example/reviewer.md",
+                   "--guidelines", "{guidelines}", "--kind", "{kind}"]
+```
+
 ### Submit an approved job
 
 Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
@@ -243,6 +253,36 @@ Each job has `state/jobs/<id>/`, a separate workspace, copied inputs, a
 `WORKFLOW.md`, and execution evidence. Code jobs use a detached git worktree
 at the target's HEAD. Results remain there for inspection; this command
 does not merge or apply them.
+
+#### Review-only jobs
+
+Replace `outputs`, `check_command`, `checklist`, and `progress` with one `review_target` to
+review something that already exists. There is no work stage and no check; the job starts at
+the review step, in the target directory itself.
+
+```json
+{
+  "receipt_key": "approval-message-1:review-1",
+  "approval_source": "approval-message-1",
+  "approval_scope": "Review only; change nothing",
+  "prompt": "Review this change against the intent and the spec.",
+  "kind": "code",
+  "target": "/srv/example-repo",
+  "intent": "/srv/example-inputs/intent.md",
+  "spec": "/srv/example-inputs/spec.md",
+  "review_target": {"commit": "HEAD"}
+}
+```
+
+`review_target` is exactly one of `{"files": ["relative/path"]}` (files under `target`) or
+`{"commit": "<revision>"}` (resolved to a full SHA when the job is submitted). `inputs`,
+`predecessors`, `expected_wait_seconds`, and `approval_required` work as for other jobs.
+
+The verdict is the result. A parsed `PASS` or `FAIL` is recorded and delivered; a `FAIL` does
+not start a fix, because there is nothing to fix. An answer with no acceptable verdict line, or a
+target that changed during the review, costs a round and reviews again, up to the same cap of
+three; after that the job stops for user judgment (`review_exhausted`). The review record and
+job state are in `show <id>`.
 
 ### Timer entry point
 

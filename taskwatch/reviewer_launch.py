@@ -1,0 +1,266 @@
+"""Build the omp reviewer command at run time and run it.
+
+The omp agent definition says who the reviewer is: its tools, the agents it may spawn and its
+model come from the front matter, and its body is the start of the appended system prompt.
+The guideline folder follows it, file by file, then an optional launch-path layer. Nothing is
+copied into this module, so editing a source file changes the next run.
+
+An overlay turns async off, because ``omp -p`` and RPC runs end before a background sub-agent
+reports, and disables every agent the definition does not allow. The prompt cannot enforce
+that list; omp refuses a disabled agent whatever the prompt says.
+
+Options not listed here pass through to omp unchanged, after the built options.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from .review_docs import PROFILES, all_names, docs_dir, profile_names
+
+_KEY = re.compile(r"^([A-Za-z][\w-]*):[ \t]*(.*)$")
+_THINKING = ("thinking-level", "thinkingLevel", "thinking")
+
+
+class LaunchError(Exception):
+    """The command cannot be built; nothing was started."""
+
+
+@dataclass(frozen=True, slots=True)
+class Agent:
+    body: str
+    tools: tuple[str, ...]
+    spawns: tuple[str, ...] | None  # None: any agent; empty: none
+    models: tuple[str, ...]
+    thinking: str
+
+
+@dataclass(frozen=True, slots=True)
+class Plan:
+    argv: tuple[str, ...]
+    system: str
+    overlay: str
+    system_path: Path
+    overlay_path: Path
+
+
+def _items(raw: str) -> tuple[str, ...]:
+    text = raw.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    parts = (part.strip().strip("'\"").strip() for part in text.split(","))
+    return tuple(part for part in parts if part)
+
+
+def _front_matter(text: str) -> tuple[dict[str, str], str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise LaunchError("the agent definition has no front matter")
+    for end in range(1, len(lines)):
+        if lines[end].strip() == "---":
+            break
+    else:
+        raise LaunchError("the agent definition front matter is not closed")
+    fields: dict[str, str] = {}
+    for line in lines[1:end]:
+        # Nested blocks such as an output schema do not reach the command line.
+        match = _KEY.match(line)
+        if match:
+            fields[match.group(1)] = match.group(2)
+    return fields, "\n".join(lines[end + 1 :]).strip() + "\n"
+
+
+def parse_agent(text: str) -> Agent:
+    fields, body = _front_matter(text)
+    if not fields.get("name", "").strip():
+        raise LaunchError("the agent definition needs a name")
+    tools = _items(fields.get("tools", ""))
+    spawns = _items(fields.get("spawns", ""))
+    return Agent(
+        body=body,
+        tools=tools,
+        spawns=None if spawns == ("*",) else spawns,
+        models=_items(fields.get("model", "")),
+        thinking=next((v[0] for v in (_items(fields.get(k, "")) for k in _THINKING) if v), ""),
+    )
+
+
+def agent_name(text: str) -> str:
+    return _front_matter(text)[0].get("name", "").strip().strip("'\"")
+
+
+def _guideline_files(folder: Path, kinds: Sequence[str]) -> list[tuple[str, str]]:
+    names = list(dict.fromkeys(n for kind in kinds for n in profile_names(kind))) or list(
+        all_names()
+    )
+    rows = []
+    for name in names:
+        path = folder / name
+        try:
+            rows.append((name, path.read_text(encoding="utf-8")))
+        except OSError as exc:
+            raise LaunchError(f"guideline file is unreadable: {path}: {exc}") from exc
+    return rows
+
+
+def system_prompt(agent: Agent, guidelines: Iterable[tuple[str, str]], layer: str | None) -> str:
+    parts = [
+        agent.body.rstrip(),
+        "The review guidelines follow in full, one file after another. They are already read:"
+        " do not look for them in a skill or on disk.",
+    ]
+    parts += [
+        f'<guideline file="{name}">\n{text.rstrip()}\n</guideline>' for name, text in guidelines
+    ]
+    if layer is not None:
+        parts.append(f"<launch-layer>\n{layer.rstrip()}\n</launch-layer>")
+    return "\n\n".join(parts) + "\n"
+
+
+def overlay_text(disabled: Collection[str]) -> str:
+    # A JSON flow list is valid YAML and quotes every name.
+    return f"async:\n  enabled: false\ntask:\n  disabledAgents: {json.dumps(sorted(disabled))}\n"
+
+
+def disabled_agents(agent: Agent, known: Collection[str]) -> list[str]:
+    if agent.spawns is None:
+        return []
+    return sorted(set(known) - set(agent.spawns))
+
+
+def plan(
+    agent: Agent,
+    guidelines: Iterable[tuple[str, str]],
+    layer: str | None,
+    known: Collection[str],
+    omp: str,
+    work_dir: Path,
+) -> Plan:
+    system = system_prompt(agent, guidelines, layer)
+    overlay = overlay_text(disabled_agents(agent, known))
+    digest = hashlib.sha256(f"{system}\0{overlay}".encode()).hexdigest()[:16]
+    folder = work_dir / digest
+    system_path, overlay_path = folder / "system.md", folder / "overlay.yml"
+    tools = list(agent.tools)
+    if agent.spawns != () and "task" not in tools:
+        tools.append("task")
+    argv = [omp]
+    if agent.models:
+        argv += ["--model", agent.models[0]]
+    if agent.thinking:
+        argv += ["--thinking", agent.thinking]
+    if tools:
+        argv += ["--tools", ",".join(tools)]
+    argv += ["--append-system-prompt", str(system_path), "--config", str(overlay_path)]
+    return Plan(tuple(argv), system, overlay, system_path, overlay_path)
+
+
+def materialize(built: Plan) -> None:
+    """Write the two files under a name that holds their content hash, so a rerun is a no-op."""
+    for path, text in ((built.system_path, built.system), (built.overlay_path, built.overlay)):
+        if path.is_file() and path.read_text(encoding="utf-8") == text:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_name(f"{path.name}.{os.getpid()}")
+        part.write_text(text, encoding="utf-8")
+        os.replace(part, path)
+
+
+def _agent_dirs() -> list[Path]:
+    home = os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".omp" / "agent")
+    return [Path(home) / "agents", Path.cwd() / ".omp" / "agents"]
+
+
+def known_agents(omp: str) -> set[str]:
+    """Every agent name omp can spawn: the bundled ones, the user's and the project's."""
+    names: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="taskwatch-agents-") as scratch:
+        proc = subprocess.run(
+            [omp, "agents", "unpack", "--dir", scratch, "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise LaunchError(f"omp could not list its bundled agents: {proc.stderr.strip()}")
+        names |= _names_in(Path(scratch))
+    for folder in _agent_dirs():
+        names |= _names_in(folder)
+    return names
+
+
+def _names_in(folder: Path) -> set[str]:
+    names = set()
+    for path in folder.glob("*.md"):
+        try:
+            names.add(agent_name(path.read_text(encoding="utf-8")) or path.stem)
+        except (LaunchError, OSError):
+            names.add(path.stem)
+    return names
+
+
+def _parser() -> argparse.ArgumentParser:
+    cli = argparse.ArgumentParser(
+        prog="python -m taskwatch.reviewer_launch", allow_abbrev=False, description=__doc__
+    )
+    cli.add_argument("--agent", type=Path, required=True, help="omp agent definition file")
+    cli.add_argument(
+        "--guidelines", type=Path, help="guideline folder (default: the installed one)"
+    )
+    cli.add_argument("--kind", action="append", default=[], help="review kind; default all kinds")
+    cli.add_argument("--layer", type=Path, help="launch-path layer file appended last")
+    cli.add_argument("--omp", default="omp", help="omp executable")
+    cli.add_argument("--work-dir", type=Path, help="where the prompt and overlay files are written")
+    cli.add_argument("--print-command", action="store_true", help="print the command, do not run")
+    return cli
+
+
+def build(args: argparse.Namespace) -> Plan:
+    folder = args.guidelines or docs_dir("review")
+    if folder is None:
+        raise LaunchError("review guidelines were not found")
+    try:
+        text = args.agent.read_text(encoding="utf-8")
+        layer = args.layer.read_text(encoding="utf-8") if args.layer else None
+    except OSError as exc:
+        raise LaunchError(f"input is unreadable: {exc}") from exc
+    unknown = [kind for kind in args.kind if kind not in PROFILES]
+    if unknown:
+        raise LaunchError(f"unknown review kind: {', '.join(unknown)}")
+    agent = parse_agent(text)
+    work = args.work_dir or Path(tempfile.gettempdir()) / "taskwatch-reviewer"
+    known = known_agents(args.omp) if agent.spawns is not None else set()
+    return plan(agent, _guideline_files(folder, args.kind), layer, known, args.omp, work)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args, passthrough = _parser().parse_known_args(argv)
+    try:
+        built = build(args)
+    except (LaunchError, KeyError, OSError) as exc:
+        print(f"reviewer_launch: {exc}", file=sys.stderr)
+        return 1
+    materialize(built)
+    command = [*built.argv, *passthrough]
+    if args.print_command:
+        print(shlex.join(command))
+        return 0
+    try:
+        os.execvp(command[0], command)
+    except OSError as exc:
+        print(f"reviewer_launch: cannot run {command[0]}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

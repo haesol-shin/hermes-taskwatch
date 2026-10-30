@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 import time
 import uuid
 from collections.abc import Mapping
@@ -95,6 +96,8 @@ class JobState:
     guideline_hashes: Mapping[str, str] | None = None
     deliveries: tuple[Mapping, ...] = ()
     notices: tuple[Mapping, ...] = ()
+    # Set for a review-only job: {"files": [...]} relative to target, or {"commit": full sha}.
+    review_target: Mapping | None = None
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -260,39 +263,39 @@ def _relative(value: object, label: str) -> None:
         raise ValueError(f"{label} must stay in the workspace")
 
 
+_COMMON_FIELDS = {
+    "receipt_key",
+    "approval_source",
+    "approval_scope",
+    "prompt",
+    "kind",
+    "target",
+    "intent",
+    "spec",
+}
+_WORK_FIELDS = {"outputs", "check_command", "checklist", "progress"}
+_OPTIONAL_FIELDS = {"inputs", "predecessors", "expected_wait_seconds", "approval_required"}
+
+
 def _submission(payload: dict) -> dict:
-    required = {
-        "receipt_key",
-        "approval_source",
-        "approval_scope",
-        "prompt",
-        "kind",
-        "target",
-        "intent",
-        "spec",
-        "outputs",
-        "check_command",
-        "checklist",
-        "progress",
-    }
-    optional = {"inputs", "predecessors", "expected_wait_seconds", "approval_required"}
-    if required - payload.keys() or payload.keys() - required - optional:
+    # A review target replaces the work contract: there is no work stage to describe.
+    review_only = isinstance(payload, dict) and "review_target" in payload
+    required = _COMMON_FIELDS | ({"review_target"} if review_only else _WORK_FIELDS)
+    if required - payload.keys() or payload.keys() - required - _OPTIONAL_FIELDS:
         raise ValueError("submit has missing or unknown fields")
     data = {**payload}
-    for key in required - {"outputs", "check_command"}:
+    for key in required - {"outputs", "check_command", "review_target"}:
         if not isinstance(data[key], str) or not data[key].strip():
             raise ValueError(f"{key} must be nonempty text")
     if data["kind"] not in KINDS:
         raise ValueError("unknown job kind")
-    for key in ("outputs", "check_command"):
-        _strings(data[key], key, nonempty=True)
-    for item in data["outputs"]:
-        _relative(item, "output")
-    for key in ("checklist", "progress"):
-        _relative(data[key], key)
     data["target"] = str(Path(data["target"]).resolve(strict=True))
     if not Path(data["target"]).is_dir():
         raise ValueError("target must be a directory")
+    if review_only:
+        _review_fields(data)
+    else:
+        _work_fields(data)
     data.setdefault("predecessors", [])
     _strings(data["predecessors"], "predecessors")
     data.setdefault("expected_wait_seconds", 0)
@@ -310,6 +313,58 @@ def _submission(payload: dict) -> dict:
     return data
 
 
+def _work_fields(data: dict) -> None:
+    for key in ("outputs", "check_command"):
+        _strings(data[key], key, nonempty=True)
+    for item in data["outputs"]:
+        _relative(item, "output")
+    for key in ("checklist", "progress"):
+        _relative(data[key], key)
+
+
+def _review_fields(data: dict) -> None:
+    """Fill the work contract with what a review-only job has: nothing to build or check."""
+    target = data["review_target"]
+    if not isinstance(target, dict) or len(target) != 1 or target.keys() - {"files", "commit"}:
+        raise ValueError("review_target needs exactly one of files or commit")
+    root = Path(data["target"])
+    if "files" in target:
+        _strings(target["files"], "review_target files", nonempty=True)
+        for item in target["files"]:
+            _relative(item, "review_target file")
+            if not (root / item).is_file():
+                raise ValueError(f"review_target file does not exist: {item}")
+        data["review_target"] = {"files": list(target["files"])}
+        data["outputs"] = list(target["files"])
+    else:
+        data["review_target"] = {"commit": _resolve_commit(root, target["commit"])}
+        data["outputs"] = []
+    data.update(check_command=[], checklist="", progress="", resume_stage="review")
+
+
+def _resolve_commit(root: Path, revision: object) -> str:
+    if not isinstance(revision, str) or not revision.strip() or revision.startswith("-"):
+        raise ValueError("review_target commit must be a revision")
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{revision}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sha = proc.stdout.strip()
+    if proc.returncode != 0 or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        raise ValueError(f"review_target commit is not a commit of the target: {revision}")
+    return sha
+
+
 def _validate_record(job: dict) -> None:
     if not isinstance(job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", job["id"]):
         raise RecordError("jobs.jsonl: invalid job id")
@@ -318,7 +373,9 @@ def _validate_record(job: dict) -> None:
     for key in ("attempt", "recoveries", "fix_rounds"):
         if type(job.get(key)) is not int or job[key] < 0:
             raise RecordError(f"jobs.jsonl: invalid {key}")
-    for key in (
+    review_only = job.get("review_target") is not None
+    # A review-only job has no work contract; its checklist and progress stay empty.
+    texts = (
         "receipt_key",
         "approval_source",
         "approval_scope",
@@ -326,9 +383,8 @@ def _validate_record(job: dict) -> None:
         "target",
         "intent",
         "spec",
-        "checklist",
-        "progress",
-    ):
+    )
+    for key in texts if review_only else (*texts, "checklist", "progress"):
         if not isinstance(job.get(key), str) or not job[key]:
             raise RecordError(f"jobs.jsonl: missing {key}")
     for key in ("outputs", "check_command", "predecessors", "events", "checks", "reviews"):
@@ -340,6 +396,8 @@ def _validate_record(job: dict) -> None:
         if type(job.get(key)) not in {int, float} or not math.isfinite(job[key]):
             raise RecordError(f"jobs.jsonl: invalid {key}")
     _validate_controls(job)
+    if job.get("review_target") is not None:
+        _validate_review_target(job)
     _validate_manifest(job)
     for key in ("deliveries", "notices"):
         attempts = job.get(key, [])
@@ -348,6 +406,20 @@ def _validate_record(job: dict) -> None:
             for row in attempts
         ):
             raise RecordError(f"jobs.jsonl: invalid {key} attempts")
+
+
+def _validate_review_target(job: dict) -> None:
+    target = job["review_target"]
+    if not isinstance(target, dict) or len(target) != 1:
+        raise RecordError("jobs.jsonl: invalid review target")
+    if "commit" in target:
+        valid = isinstance(target["commit"], str) and re.fullmatch(
+            r"[0-9a-f]{40}", target["commit"]
+        )
+    else:
+        valid = target.get("files") == job["outputs"] and bool(job["outputs"])
+    if not valid:
+        raise RecordError("jobs.jsonl: invalid review target")
 
 
 def _validate_controls(job: dict) -> None:
@@ -373,10 +445,14 @@ def _validate_controls(job: dict) -> None:
         raise RecordError("jobs.jsonl: invalid resume stage")
     if type(job.get("expected_wait_seconds")) is not int or job["expected_wait_seconds"] < 0:
         raise RecordError("jobs.jsonl: invalid expected wait")
+    review_only = job.get("review_target") is not None
     try:
         for key in ("outputs", "check_command", "predecessors"):
-            _strings(job[key], key, nonempty=key != "predecessors")
-        for relative in [*job["outputs"], job["checklist"], job["progress"]]:
+            _strings(job[key], key, nonempty=key == "outputs" and not review_only)
+        for relative in [
+            *job["outputs"],
+            *([] if review_only else [job["checklist"], job["progress"]]),
+        ]:
             _relative(relative, "job file")
     except ValueError as exc:
         raise RecordError(f"jobs.jsonl: {exc}") from exc

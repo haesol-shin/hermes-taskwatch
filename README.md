@@ -140,6 +140,7 @@ The main agent uses `taskwatch_approve` for [approval records](docs/configuratio
 - [docs/checks.md](docs/checks.md): what each check blocks and when it can be removed.
 - [docs/principles.md](docs/principles.md): the rules behind the design and their sources.
 - [docs/review](docs/review/README.md): review guidelines.
+- [docs/review-launch.md](docs/review-launch.md): launch a review through taskwatch or with omp alone, from the same guidelines.
 
 ## Contributing
 

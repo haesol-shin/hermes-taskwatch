@@ -101,7 +101,9 @@ def _action(jobs: Jobs, args: argparse.Namespace) -> dict:
                 raise ValueError("job needs user judgment")
             # A resume into a review fix opens a new cycle and spends its first round now, so
             # the cap still bounds fixes; a check repair keeps the separate recovery budget.
-            reviewing = job.resume_stage == "fix" and job.fix_rounds > 0
+            # A review-only job has no fix: its retried review is the round.
+            retrying = job.resume_stage == "fix" or job.review_target is not None
+            reviewing = retrying and job.fix_rounds > 0
             job = replace(
                 job,
                 stage="deliver_pending" if job.resume_stage == "deliver_pending" else "queued",

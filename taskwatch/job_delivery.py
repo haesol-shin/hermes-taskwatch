@@ -10,10 +10,17 @@ from pathlib import Path
 
 from .evidence import basis_of
 from .fingerprint import files_fingerprint
-from .job_runner import _fingerprint, _kill_group, _requeue_check, _write_durable
+from .job_runner import _fingerprint, _kill_group, _requeue, _write_durable
 from .jobs import JobConfig, Jobs, JobState
 
 DELIVERY_TIMEOUT = 60
+
+
+def _accepted(job: JobState, review: dict) -> bool:
+    """A review-only job delivers its verdict whatever it is; other jobs deliver only a PASS."""
+    if job.review_target is not None:
+        return bool(review.get("final"))
+    return bool(review.get("ok") and review.get("verdict") == "PASS")
 
 
 def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> JobState:
@@ -24,8 +31,7 @@ def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Job
     review = job.reviews[-1] if job.reviews else {}
     try:
         current = (
-            review.get("ok")
-            and review.get("verdict") == "PASS"
+            _accepted(job, review)
             and _fingerprint(job, Path(job.workspace)) == review.get("fingerprint")
             and files_fingerprint(Path(job.workspace), job.outputs)
             == review.get("outputs_fingerprint")
@@ -38,7 +44,7 @@ def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Job
     except (ValueError, OSError):
         current = False
     if not current:
-        job = replace(job, **_requeue_check(job))
+        job = replace(job, **_requeue(job))
         jobs.save(job, now)
         return job
     # Inherit this lock into the sender so even a killed scanner cannot overlap an orphan send.
@@ -77,6 +83,15 @@ def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Job
         return _finish(jobs, job, {**record, **_send(command, lock.fileno())}, now)
 
 
+def _subject(job: JobState) -> list[str]:
+    target = job.review_target
+    if target is None:
+        return ["Outputs:", *(f"- {Path(job.workspace) / name}" for name in job.outputs)]
+    if "commit" in target:
+        return [f"Reviewed: commit {target['commit']}"]
+    return ["Reviewed files:", *(f"- {Path(job.workspace) / name}" for name in target["files"])]
+
+
 def _message(jobs: Jobs, job: JobState) -> Path:
     folder = jobs.folder(job)
     review = job.reviews[-1] if job.reviews else {}
@@ -85,8 +100,7 @@ def _message(jobs: Jobs, job: JobState) -> Path:
     lines = [
         f"Job {job.id}: {job.prompt.strip().splitlines()[0]}",
         f"Verdict: {review.get('verdict', 'unavailable')}",
-        "Outputs:",
-        *(f"- {Path(job.workspace) / name}" for name in job.outputs),
+        *_subject(job),
         f"Result: {job.workspace}",
         f"Review: {review_file}",
     ]

@@ -1,0 +1,14 @@
+{"items": [
+  {"id": "sources-read", "passes": true},
+  {"id": "mapping", "passes": true},
+  {"id": "no-duplication", "passes": true},
+  {"id": "review-only-kind", "passes": true},
+  {"id": "launcher", "passes": true},
+  {"id": "launch-layer", "passes": true},
+  {"id": "tests", "passes": true},
+  {"id": "docs", "passes": true},
+  {"id": "changelog", "passes": true},
+  {"id": "accept-review-only", "passes": false},
+  {"id": "accept-same-text", "passes": false},
+  {"id": "accept-edit-applies", "passes": false}
+]}
