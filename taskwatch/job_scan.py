@@ -234,7 +234,7 @@ class _Scan:
         if not job.workspace:
             return job
         try:
-            digest = progress_fingerprint(job, Path(job.workspace))
+            digest = progress_fingerprint(job, Path(job.workspace), self.jobs.folder(job))
         except OSError as exc:
             # One unreadable file must not stop the scan of unrelated jobs.
             self._park(job, "progress_unreadable", f"progress_unreadable: {exc}")

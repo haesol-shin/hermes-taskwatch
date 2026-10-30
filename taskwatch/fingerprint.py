@@ -9,7 +9,7 @@ import hashlib
 import os
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 _SHA = r"[0-9a-f]{40}"
@@ -25,7 +25,7 @@ def git_fingerprint(sha: str) -> str:
     return sha
 
 
-def uncommitted_changes(repo: Path) -> tuple[str, ...]:
+def uncommitted_changes(repo: Path, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
     """Porcelain lines, including untracked files.
 
     A review of a SHA does not cover changes that are not in that commit.
@@ -37,6 +37,7 @@ def uncommitted_changes(repo: Path) -> tuple[str, ...]:
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     if proc.returncode != 0:
         detail = proc.stderr.strip() or "git status failed"
@@ -44,9 +45,9 @@ def uncommitted_changes(repo: Path) -> tuple[str, ...]:
     return tuple(line for line in proc.stdout.splitlines() if line.strip())
 
 
-def head_sha(repo: Path) -> str:
+def head_sha(repo: Path, env: Mapping[str, str] | None = None) -> str:
     """The commit the work copy is on. The fingerprint of a Git result is this value."""
-    return git_fingerprint(_git_ok(repo, ["rev-parse", "HEAD"]).decode("utf-8").strip())
+    return git_fingerprint(_git_ok(repo, ["rev-parse", "HEAD"], env=env).decode("utf-8").strip())
 
 
 def files_fingerprint(root: Path, relative_paths: Sequence[str]) -> str:
@@ -76,12 +77,18 @@ def _git_cmd(repo: Path, args: Sequence[str]) -> list[str]:
     return ["git", "--no-replace-objects", "-C", os.fspath(repo.absolute()), *args]
 
 
-def _git_ok(repo: Path, args: list[str], stdin: bytes | None = None) -> bytes:
+def _git_ok(
+    repo: Path,
+    args: list[str],
+    stdin: bytes | None = None,
+    env: Mapping[str, str] | None = None,
+) -> bytes:
     proc = subprocess.run(
         _git_cmd(repo, args),
         input=stdin,
         check=False,
         capture_output=True,
+        env=env,
     )
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed"

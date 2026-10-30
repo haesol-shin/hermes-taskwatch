@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .evidence import basis_of
 from .fingerprint import files_fingerprint
+from .job_env import job_environment
 from .job_runner import _fingerprint, _kill_group, _requeue, _write_durable
 from .jobs import JobConfig, Jobs, JobState
 
@@ -32,7 +33,8 @@ def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Job
     try:
         current = (
             _accepted(job, review)
-            and _fingerprint(job, Path(job.workspace)) == review.get("fingerprint")
+            and _fingerprint(job, Path(job.workspace), job_environment(config.env))
+            == review.get("fingerprint")
             and files_fingerprint(Path(job.workspace), job.outputs)
             == review.get("outputs_fingerprint")
             and bool(job.guideline_hashes)

@@ -11,7 +11,7 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 DEFAULT_FRAME_BYTES = 1 << 20
@@ -117,6 +117,7 @@ class RpcClient:
         stderr_path: Path | None = None,
         abort: threading.Event | None = None,
         poll: float = 2.0,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self.argv = list(argv)
         self.cwd = cwd
@@ -124,6 +125,7 @@ class RpcClient:
         self.stderr_path = stderr_path
         self.abort = abort or threading.Event()
         self.poll = poll
+        self.env = env
         self.max_frame = DEFAULT_FRAME_BYTES
         self._cv = threading.Condition()
         self._send_lock = threading.Lock()
@@ -161,7 +163,7 @@ class RpcClient:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr if self._stderr else subprocess.DEVNULL,
-                env=os.environ.copy(),
+                env=dict(self.env) if self.env is not None else os.environ.copy(),
             )
         except OSError as exc:
             self._close_stderr()

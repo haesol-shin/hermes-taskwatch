@@ -30,6 +30,7 @@ from .fingerprint import (
     head_sha,
     uncommitted_changes,
 )
+from .job_env import job_environment
 from .job_rpc import RpcAborted, RpcClient, RpcError
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobConfig, Jobs, JobState, progress_fingerprint
 from .review_docs import docs_dir, profile_names
@@ -84,6 +85,10 @@ class Ctx:
     @property
     def stage(self) -> str:
         return self.job.stage
+
+    @property
+    def env(self) -> dict[str, str]:
+        return job_environment(self.config.env)
 
 
 def run_job(jobs: Jobs, config: JobConfig, job_id: str, attempt: int) -> int:
@@ -156,7 +161,7 @@ def _stop(jobs: Jobs, job: JobState, reason: str, message: str) -> int:
 
 def _context(jobs: Jobs, config: JobConfig, job: JobState) -> Ctx:
     folder = jobs.folder(job)
-    workspace = _workspace(job, folder)
+    workspace = _workspace(job, folder, job_environment(config.env))
     ctx = Ctx(jobs, config, replace(job, workspace=str(workspace)), folder, workspace)
     hashes = _prepare(ctx)
     recorded = job.guideline_hashes
@@ -166,7 +171,7 @@ def _context(jobs: Jobs, config: JobConfig, job: JobState) -> Ctx:
     return ctx
 
 
-def _workspace(job: JobState, folder: Path) -> Path:
+def _workspace(job: JobState, folder: Path, env: Mapping[str, str]) -> Path:
     if job.review_target is not None:
         # Nothing is built, so the reviewer reads the target itself.
         return Path(job.target)
@@ -184,6 +189,7 @@ def _workspace(job: JobState, folder: Path) -> Path:
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if proc.returncode != 0:
         raise StepError(f"git worktree add failed: {proc.stderr.strip()}")
@@ -255,7 +261,7 @@ Approval source: {source}
 Approved scope (complete; nothing outside it is approved):
 {scope}
 
-Do not write outside the workspace, send a message, call an external service or change
+Do not write outside the workspace{exception}, send a message, call an external service or change
 any external state beyond that scope. If a step needs something outside it, run this
 command first, which records the request before you act, then stop work immediately and
 take no further action:
@@ -265,35 +271,48 @@ The user can then approve; the job resumes from its recorded stage."""
 
 def _approval_text(ctx: Ctx) -> str:
     job = ctx.job
+    # The job records sit in the job folder, so the write rule must name them as allowed.
+    exception = (
+        ""
+        if job.review_target is not None
+        else " (except this job's progress and checklist files, named in the workflow)"
+    )
     return _APPROVAL_RULES.format(
-        source=job.approval_source, scope=job.approval_scope, command=_wait_command(ctx)
+        source=job.approval_source,
+        scope=job.approval_scope,
+        command=_wait_command(ctx),
+        exception=exception,
     )
 
 
 def _workflow(ctx: Ctx) -> str:
     job = ctx.job
+    progress = ctx.folder / job.progress
+    checklist = ctx.folder / job.checklist
     work_inputs = "\n".join(f"- {p}" for p in job.inputs.get("work", [])) or "- (none)"
     return f"""# Workflow for job {job.id} ({job.review})
 
 Work only in the workspace: {ctx.workspace}
+Exception: the progress and checklist files named below, which are in the job folder.
 
 ## Start
 1. Read the intent: {job.intent}
 2. Read the spec: {job.spec}
 3. Read the original request: {ctx.folder / "prompt.md"}
-4. Read the progress file `{job.progress}` if it exists, and continue unfinished work.
-5. Read the checklist `{job.checklist}` if it exists.
+4. Read the progress file `{progress}` if it exists, and continue unfinished work.
+5. Read the checklist `{checklist}` if it exists.
 
 Work inputs:
 {work_inputs}
 
 ## While working
 - Required result files, relative to the workspace: {", ".join(job.outputs)}
-- Keep `{job.progress}` current: what is done, what remains, evidence.
-- Keep `{job.checklist}` as JSON: {{"items": [{{"id": "...", "passes": true or false}}]}}.
+- Keep `{progress}` current: what is done, what remains, evidence.
+- Keep `{checklist}` as JSON: {{"items": [{{"id": "...", "passes": true or false}}]}}.
   Set `passes` to true only when the evidence for that item exists.
-- Code jobs: commit everything in the workspace, including the progress and checklist files.
-  The checks accept only a clean, committed result.
+- The progress and checklist files are outside the workspace; never copy them into it.
+- Code jobs: commit everything in the workspace. The checks accept only a clean, committed
+  result.
 - If you delegate to subagents, wait until each one finished.
 
 {_approval_text(ctx)}
@@ -318,6 +337,9 @@ def _agent_message(ctx: Ctx, resumed: bool) -> str:
         f"Intent: {job.intent}",
         f"Spec: {job.spec}",
     ]
+    if job.review_target is None:
+        lines += [f"Progress file: {ctx.folder / job.progress}"]
+        lines += [f"Checklist file: {ctx.folder / job.checklist}"]
     for path in job.inputs.get("work", []):
         lines.append(f"Work input: {path}")
     lines += ["", _approval_text(ctx)]
@@ -455,7 +477,7 @@ class Recorder:
 
         def build(job: JobState) -> dict:
             now = _now()
-            changes = {"evidence_at": now, **_progress_changes(job, ctx.workspace, now)}
+            changes = {"evidence_at": now, **_progress_changes(job, ctx, now)}
             if event is not None:
                 changes["events"] = _event(job, **event)
             return changes
@@ -489,6 +511,7 @@ def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text:
             stderr_path=stderr,
             abort=recorder.abort,
             poll=SETTLE_POLL,
+            env=ctx.env,
         ) as client:
             client.start(timeout)
             opened = client.open_session(session_dir, timeout)
@@ -524,7 +547,7 @@ def _agent_step(ctx: Ctx) -> int:
             "ended_at": now,
             "error": "",
             "events": _event(job, type="step_exit", stage=stage, code=0),
-            **_progress_changes(job, ctx.workspace, now),
+            **_progress_changes(job, ctx, now),
         }
 
     _apply(ctx, build)
@@ -541,37 +564,37 @@ def _inside(workspace: Path, relative: str) -> Path | None:
 # --- progress, fingerprint, check ----------------------------------------------------------
 
 
-def _progress_changes(job: JobState, workspace: Path, now: float) -> dict:
-    current = progress_fingerprint(job, workspace)
+def _progress_changes(job: JobState, ctx: Ctx, now: float) -> dict:
+    current = progress_fingerprint(job, ctx.workspace, ctx.folder)
     if current == job.progress_hash:
         return {}
     return {"progress_hash": current, "last_progress_at": now}
 
 
-def _fingerprint(job: JobState, workspace: Path) -> str:
+def _fingerprint(job: JobState, workspace: Path, env: Mapping[str, str]) -> str:
     target = job.review_target
     if target is not None and "commit" in target:
-        _git_ok(workspace, ["cat-file", "-e", f"{target['commit']}^{{commit}}"])
+        _git_ok(workspace, ["cat-file", "-e", f"{target['commit']}^{{commit}}"], env=env)
         return target["commit"]
     if job.review != "code" or target is not None:
         return files_fingerprint(workspace, job.outputs)
-    dirty = uncommitted_changes(workspace)
+    dirty = uncommitted_changes(workspace, env)
     if dirty:
         raise FingerprintError(f"uncommitted changes: {'; '.join(dirty[:5])}")
-    return head_sha(workspace)
+    return head_sha(workspace, env)
 
 
 def _basis(job: JobState, folder: Path) -> str:
     return basis_of(Path(job.intent), Path(job.spec), _guidelines(job, folder))
 
 
-def _file_problems(job: JobState, workspace: Path) -> list[str]:
+def _file_problems(job: JobState, workspace: Path, folder: Path) -> list[str]:
     problems = []
-    for rel in [*job.outputs, job.progress]:
-        path = _inside(workspace, rel)
+    for base, rel in [*((workspace, item) for item in job.outputs), (folder, job.progress)]:
+        path = _inside(base, rel)
         if path is None or not path.is_file():
             problems.append(f"required file is missing: {rel}")
-    path = _inside(workspace, job.checklist)
+    path = _inside(folder, job.checklist)
     failing = checklist_problems(str(path)) if path is not None else ("missing",)
     if failing is None:
         problems.append("the checklist is not a nonempty JSON list of items with boolean passes")
@@ -602,6 +625,7 @@ def _run_command(ctx: Ctx, seq: int) -> tuple[dict, list[str]]:
                 stdout=out,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                env=ctx.env,
             )
             try:
                 code = proc.wait(timeout=ctx.config.rpc_timeout)
@@ -628,10 +652,10 @@ def _check_step(ctx: Ctx) -> int:
     seq = len(job.checks) + len(job.reviews) + 1
     run, problems = _run_command(ctx, seq)
     # After the command: it may have changed or removed what the checks require.
-    problems += _file_problems(job, ctx.workspace)
+    problems += _file_problems(job, ctx.workspace, ctx.folder)
     fingerprint = basis = ""
     try:
-        fingerprint = _fingerprint(job, ctx.workspace)
+        fingerprint = _fingerprint(job, ctx.workspace, ctx.env)
         basis = _basis(job, ctx.folder)
     except (ValueError, OSError) as exc:
         problems.append(str(exc))
@@ -651,7 +675,7 @@ def _check_step(ctx: Ctx) -> int:
             "fingerprint": fingerprint,
             "basis": basis,
             "events": _event(current, type="check", ok=not problems),
-            **_progress_changes(current, ctx.workspace, _now()),
+            **_progress_changes(current, ctx, _now()),
         }
         return {**changes, **_check_route(current, problems)}
 
@@ -692,7 +716,7 @@ def _check_route(job: JobState, problems: list[str]) -> dict:
 def _pin_subject(ctx: Ctx) -> Ctx:
     """A review-only job has no check to fix the result, so the review step does it."""
     try:
-        fingerprint = _fingerprint(ctx.job, ctx.workspace)
+        fingerprint = _fingerprint(ctx.job, ctx.workspace, ctx.env)
         basis = _basis(ctx.job, ctx.folder)
     except (ValueError, OSError) as exc:
         raise StepError(f"the review target cannot be read: {exc}") from exc
@@ -703,7 +727,7 @@ def _pin_subject(ctx: Ctx) -> Ctx:
 def _result_stale(ctx: Ctx) -> bool:
     job = ctx.job
     try:
-        changed = _fingerprint(job, ctx.workspace) != job.fingerprint
+        changed = _fingerprint(job, ctx.workspace, ctx.env) != job.fingerprint
         return changed or _basis(job, ctx.folder) != job.basis or not job.fingerprint
     except (ValueError, OSError):
         return True
@@ -759,7 +783,7 @@ def _evidence_problems(ctx: Ctx) -> list[str]:
             return ["the check log does not match its recorded hash"]
     except OSError as exc:
         return [f"the check log is unreadable: {exc}"]
-    return _file_problems(job, ctx.workspace)
+    return _file_problems(job, ctx.workspace, ctx.folder)
 
 
 def _requeue(job: JobState) -> dict:
@@ -801,7 +825,7 @@ def _judge(ctx: Ctx, body: str) -> dict:
     except ValueError as exc:
         record["problems"].append(str(exc))
     try:
-        if _fingerprint(job, ctx.workspace) != job.fingerprint:
+        if _fingerprint(job, ctx.workspace, ctx.env) != job.fingerprint:
             record["problems"].append("the result changed during the review")
         record["outputs_fingerprint"] = files_fingerprint(ctx.workspace, job.outputs)
         if _basis(job, ctx.folder) != job.basis:

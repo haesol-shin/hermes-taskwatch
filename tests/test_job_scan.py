@@ -8,6 +8,7 @@ import pytest
 
 from taskwatch import job_runner, job_scan
 from taskwatch.job_cli import main as cli_main
+from taskwatch.job_env import job_environment
 from taskwatch.job_runner import run_job
 from taskwatch.job_scan import Systemd, scan_jobs
 from taskwatch.jobs import (
@@ -275,7 +276,11 @@ def test_unreadable_progress_parks_only_that_job_and_the_scan_continues(
     work.mkdir()
     output = work / "out.txt"
     output.write_text("output")
-    board.set(bad, workspace=str(work), progress_hash=progress_fingerprint(board.get(bad), work))
+    board.set(
+        bad,
+        workspace=str(work),
+        progress_hash=progress_fingerprint(board.get(bad), work, board.jobs.folder(board.get(bad))),
+    )
     good = board.add()
     output.chmod(0)
     if os.geteuid() == 0:
@@ -328,7 +333,10 @@ def test_progress_or_output_change_counts_as_progress(board: Board, name: str) -
     workspace = _workspace(board, job_id)
     board.scan()  # records the baseline hash
     board.scan(STALL - 10)
-    (workspace / name).write_text("step 1", encoding="utf-8")
+    # The progress record lives in the job folder, the output in the workspace.
+    base = board.jobs.folder(board.get(job_id)) if name == "progress.md" else workspace
+    base.mkdir(parents=True, exist_ok=True)
+    (base / name).write_text("step 1", encoding="utf-8")
     board.scan(20)  # 110 s since the baseline: stalled unless the change counted
     assert board.get(job_id).stall_suspected is False
     assert board.get(job_id).progress_hash != ""
@@ -337,8 +345,10 @@ def test_progress_or_output_change_counts_as_progress(board: Board, name: str) -
 def test_unchanged_files_do_not_count_as_progress(board: Board) -> None:
     job_id = board.add()
     board.scan()
-    workspace = _workspace(board, job_id)
-    (workspace / "progress.md").write_text("step 1", encoding="utf-8")
+    _workspace(board, job_id)
+    folder = board.jobs.folder(board.get(job_id))
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "progress.md").write_text("step 1", encoding="utf-8")
     board.scan()
     board.scan(STALL + 1)
     assert board.get(job_id).stall_suspected is True
@@ -540,7 +550,7 @@ def test_job_waits_for_predecessors_to_pass(board: Board) -> None:
             {
                 "ok": True,
                 "verdict": "PASS",
-                "fingerprint": job_runner._fingerprint(job, workspace),
+                "fingerprint": job_runner._fingerprint(job, workspace, job_environment({})),
                 "outputs_fingerprint": job_runner.files_fingerprint(workspace, job.outputs),
                 "basis": job_runner._basis(job, board.jobs.folder(job)),
             },

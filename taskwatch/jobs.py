@@ -8,11 +8,12 @@ import subprocess
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 
+from .job_env import validate_env
 from .state import RecordError, State, _create_new, _make_dirs
 
 STAGES = frozenset(
@@ -102,10 +103,10 @@ class JobState:
     review_target: Mapping | None = None
 
     def __post_init__(self) -> None:
-        for field in fields(self):
-            value = getattr(self, field.name)
+        for item in fields(self):
+            value = getattr(self, item.name)
             if isinstance(value, (Mapping, list, tuple)):
-                object.__setattr__(self, field.name, _freeze(value))
+                object.__setattr__(self, item.name, _freeze(value))
 
     def to_json(self) -> dict:
         return {field.name: _json_value(getattr(self, field.name)) for field in fields(self)}
@@ -119,12 +120,13 @@ class JobConfig:
     rpc_timeout: int = 3600
     deliver_command: tuple[str, ...] = ("false", "{message}")
     review_command: tuple[str, ...] | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
 
 
 def load_job_config(root: Path) -> JobConfig:
     path = root / "taskwatch" / "jobs-config.json"
     obj = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(obj, dict) or set(obj) - {"review_command"} != {
+    if not isinstance(obj, dict) or set(obj) - {"review_command", "env"} != {
         "version",
         "slots",
         "stall_seconds",
@@ -144,6 +146,7 @@ def load_job_config(root: Path) -> JobConfig:
     _strings(obj["omp_command"], "omp_command", nonempty=True)
     if "review_command" in obj:
         _strings(obj["review_command"], "review_command", nonempty=True)
+    env = validate_env(obj["env"]) if "env" in obj else {}
     _strings(obj["deliver_command"], "deliver_command", nonempty=True)
     command = obj["deliver_command"]
     if command.count("{message}") != 1 or any(
@@ -157,6 +160,7 @@ def load_job_config(root: Path) -> JobConfig:
         obj["rpc_timeout"],
         tuple(command),
         tuple(obj["review_command"]) if "review_command" in obj else None,
+        env,
     )
 
 
@@ -493,13 +497,16 @@ def _validate_manifest(job: dict) -> None:
         raise RecordError("jobs.jsonl: incomplete input hash manifest")
 
 
-def progress_fingerprint(job: JobState, workspace: Path) -> str:
-    """Hash progress and outputs, never growing session or command logs."""
-    workspace = workspace.resolve()
+def progress_fingerprint(job: JobState, workspace: Path, folder: Path) -> str:
+    """Hash progress and outputs, never growing session or command logs.
+
+    The progress record lives in the job folder; outputs live in the workspace.
+    """
     digest = hashlib.sha256()
-    for relative in [job.progress, *job.outputs]:
-        path = (workspace / relative).resolve()
-        inside = not Path(relative).is_absolute() and path.is_relative_to(workspace)
+    for base, relative in [(folder, job.progress), *((workspace, item) for item in job.outputs)]:
+        base = base.resolve()
+        path = (base / relative).resolve()
+        inside = not Path(relative).is_absolute() and path.is_relative_to(base)
         data = path.read_bytes() if inside and path.is_file() else b""
         digest.update(hashlib.sha256(data).digest())
     return digest.hexdigest()
