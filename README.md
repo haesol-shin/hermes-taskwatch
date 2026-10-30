@@ -1,153 +1,77 @@
 # hermes-taskwatch
 
-**Delegate and walk away. Nothing gets dropped, nothing unchecked gets through.**
-
-hermes-taskwatch provides a standalone job runner and a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) Kanban. The standalone runner schedules approved jobs, checks their outputs, and requests an independent review. The existing plugin watches delegated cards and blocks unchecked results.
-
-> Status: experimental. See [Known limitations](#known-limitations).
+A job runner for approved agent work. It schedules each job, runs it through omp's public RPC, checks the result with plain code, requests an independent review, and delivers the outcome. A person is asked only when judgment is needed.
 
 ## What it is not
 
-- It does not patch or replace Hermes. It registers plugin hooks, commands, and tools.
-- The Hermes plugin does not execute work. The standalone runner executes approved jobs through omp's public RPC.
+- It does not import or patch Hermes Agent. Hermes can submit jobs and watch them through the `taskwatch` command, as any caller can.
+- It does not approve work. Every job carries an approval record that the caller asserts; the runner cannot authenticate the conversation it came from.
+- It does not isolate what the runner's tools can read or write. Those tools have the user's permissions, and `approval_scope` is a recorded boundary, not operating-system isolation.
+- It does not merge or apply results.
 - Every check is plain code and never calls a model. Work, fixes, and independent reviews use omp.
 
-## Standalone jobs
+## How a job runs
 
-From a checkout of this repository, run `uv sync --locked`, then use `uv run taskwatch`.
-The examples below assume `. .venv/bin/activate`; otherwise prefix `taskwatch` with `uv run`.
-Hermes is optional. Prepare Linux user systemd, an omp executable for `omp_command`,
-and a delivery command before enabling background runs.
+A job is a JSON document with a prompt, an intent file, a spec file, required outputs, a check command, a checklist, and the review profile (`code`, `design`, or `source`). A review-only job names a `review_target` instead and skips work and check.
 
-```sh
-taskwatch --root <root> init
-taskwatch --root <root> submit <approved-job.json>
-taskwatch --root <root> scan
-taskwatch --root <root> show <job-id>
-taskwatch --root <root> watch <job-id>
-```
+1. **Submit.** `submit` returns after the job and its copied inputs are durable. The receipt key deduplicates retries.
+2. **Work.** `scan` reserves a free parallel slot and starts a transient user systemd service that runs omp in the job workspace. The job keeps its slot across work, check, review, and fixes.
+3. **Check.** The runner runs the job's `check_command` and records its exit code and output. Required outputs, progress, and a nonempty passing checklist must also exist. A model's PASS claim does not replace these.
+4. **Review.** A separate omp session reviews the current result against the intent and spec, using the guidelines in [docs/review](docs/review/README.md). It returns one verdict line. A FAIL or a blocking finding starts a fix, up to three automatic rounds per cycle; then the job stops for user judgment.
+5. **Delivery.** A job that passes check and review stops at `deliver_pending`. The next `scan` runs the configured `deliver_command`. Only a recorded success makes the job `done`, and it is never sent again. Any other outcome stops at `user_wait` with `delivery_unknown`; the user can `resume` for one new send or `cancel`.
 
-Submission returns only after the job and copied inputs are durable. The receipt key
-deduplicates retries. `scan` reserves up to the configured number of parallel slots
-and starts transient user services. A job keeps its slot across work, check, review,
-and fixes. Jobs that share a target folder cannot overlap; code jobs each have their own worktree and can. Approval and user-judgment waits
-release their slots after their service has stopped.
+Jobs that share a target folder cannot overlap; code jobs each have their own worktree and can. Approval and user-judgment waits release their slots after the service has stopped. Dead runs, stalls, and reboot interruptions are recovered after the old service is known to have stopped; three failed recoveries in a row stop for user judgment.
 
-`watch` blocks until the job reaches `approval_wait`, `user_wait`, `deliver_pending`,
-`done`, or `cancelled`, prints a short report (at most 20 lines), and exits. Exit codes: `0`
-needs attention, `3` the watcher's own `--timeout` (default 82800 seconds) passed with
-nothing to report, `2` usage error or unknown job, `1` other error. It polls every
-`--interval` seconds (default 30, minimum 5), exits at once if the job already stopped, and is
-read only: it takes no lock and writes nothing. After the first read it parses only the lines
-appended to `jobs.jsonl`. Hermes can wake the room that submitted a job:
+Details: [checks](docs/checks.md) and [configuration](docs/configuration.md).
 
-```python
-terminal(background=True, notify_on_complete=True, command="taskwatch --root <root> watch <id>")
-```
+## Work folder lifecycle
 
-The report is a hint; re-read the state with `show` before acting. After `approve` or
-`resume` the job is `queued`, so a new watcher waits for the next stop.
-
-Successful jobs stop at `deliver_pending`. The next `scan` writes a delivery message
-and runs the configured `deliver_command`, with a fixed 60 second timeout. Only a
-recorded success makes the job `done`; it never sends again. A success response means
-the command reported success, not that the person read the message. Every other
-outcome, including a reported error, stops at `user_wait` with `delivery_unknown`.
-It is never resent automatically; the user can resume for one new send or cancel.
-Real omp, service recovery, reboot, and real delivery acceptance still need an
-authorized installation test. See
-[standalone configuration](docs/configuration.md#standalone-jobs) for the submission
-format, delivery, installation switch, recovery, and approval commands.
+A `code` job works in `state/jobs/<id>/worktree` on its own branch, started from a freshly fetched `origin/<default branch>`. Its checklist and progress files live in the job folder, outside the result. When the job reaches `done` or `cancelled`, the scan removes a clean worktree, keeps a dirty one and records why, and deletes the branch only after it is merged or squash merged into `origin/<default branch>`. Job folders, records, reviews, and logs are never deleted. See [code job work folders](docs/configuration.md#code-job-work-folders).
 
 ## Install
 
-Supported: Linux with systemd, Python 3.11 or later, no runtime dependencies. macOS and Windows may work through the plugin hook, but they are not tested.
+Requires Linux with user systemd, Python 3.11 or later, git, and an omp executable. There are no runtime dependencies. macOS and Windows are not supported.
 
-Supported Hermes: 0.21.5, the version the plugin was tested against. `hermes taskwatch doctor` fails on an older Hermes and only warns on a newer one.
+From a checkout, run `uv sync --locked`, then use `uv run taskwatch`. The examples below assume the virtual environment is active.
 
-Rejecting a review-gate card is not supported, see [Known limitations](#known-limitations).
+1. `taskwatch --root <root> init` writes `<root>/taskwatch/jobs-config.json`. Edit it, including `omp_command` and `deliver_command`; the draft `deliver_command` cannot send.
+2. `taskwatch --root <root> init --unit-dir <empty-dir>` stages the scan service and timer without installing them. Install them into `~/.config/systemd/user/`, run `systemctl --user daemon-reload`, then `systemctl --user enable --now hermes-taskwatch-scan.timer`.
+3. Submit jobs with `submit`.
 
-Do the steps in this order. Stop at the first failure.
+See [installation](docs/configuration.md#installation) for the full steps. To remove, disable and delete the two units; the state directory is kept.
 
-1. Use the `default` main profile and install the plugin there and in every worker profile that will run cards. Each profile keeps its own plugin list. First follow the [profile setup](docs/configuration.md#profile-setup) precondition.
+## Configuration
 
-   ```sh
-   hermes plugins install haesol-shin/hermes-taskwatch --enable
-   hermes -p <worker> plugins install haesol-shin/hermes-taskwatch --enable
-   ```
-
-   Restart the gateway so it loads the plugin.
-
-2. Write the config draft and the timer units. `--hermes` is the absolute path of the `hermes` executable the timer will run. This writes the units and does not start the timer.
-
-   ```sh
-   hermes taskwatch init --hermes "$(command -v hermes)" --board <board>
-   ```
-
-   Follow [profile setup](docs/configuration.md#profile-setup) to edit the draft before starting it. The generated service pins the first configured profile. Every key is in [docs/configuration.md](docs/configuration.md).
-
-3. Check the setup.
-
-   ```sh
-   hermes taskwatch doctor
-   ```
-
-   It checks the config, the board, the destinations, write access to the state directory, the Hermes version and that the plugin is enabled in each listed profile. Every line must be `ok`, except `hermes: warn` on a Hermes newer than 0.21.5, which is informational.
-
-4. Scan a test board once. Point `board` at a board you can throw away and the destinations at a test target first, because a scan writes warning cards and may send a line to `user_notify`.
-
-   ```sh
-   hermes taskwatch scan
-   ```
-
-5. Switch `board`, `destinations.main_subscription`, and `destinations.user_notify` to their production values. Run `hermes taskwatch doctor` again under the step 3 rule, then start the timer.
-
-   ```sh
-   systemctl --user enable --now hermes-taskwatch-scan.timer
-   ```
-
-To update: stop the timer and all new Kanban dispatch, then stop the gateway. Wait for existing Kanban workers to finish or explicitly terminate them; stopping the gateway does not guarantee their exit. Only after no workers remain, replace the plugin in each profile with `hermes plugins update hermes-taskwatch`, run `hermes taskwatch doctor`, restart the gateway and dispatch, then start the timer. Do not disable the plugin during an update, because a disabled plugin is not loaded and `doctor` does not exist.
-
-To remove: stop and disable the timer, disable the plugin in each profile, then remove it with `hermes plugins remove hermes-taskwatch`. Delete `hermes-taskwatch-scan.service` and `hermes-taskwatch-scan.timer` from `~/.config/systemd/user/` and reload systemd. The state directory is kept, see [docs/configuration.md](docs/configuration.md#state-directory).
-
-## The problem
-
-You give an agent a long job and leave the chat. Hours later you find out that a step stalled, the next step never started, or a result was marked done without the review you asked for. Nobody told you, because nothing was watching the work between your messages.
-
-## How it works
-
-- **Intent and spec.** Each card points to an `intent.md` (why, in your words, and when it is finished) and a `spec.md` (deliverables, checklist, out of scope). The main agent creates cards with `taskwatch_create`, which refuses a card when a section is missing: `Source`, `Purpose`, `Done`, `Approval` in the intent, and `Outputs`, `Checklist`, `Out of scope`, `Live`, `Guidance`, `Model` in the spec.
-- **Gate before completion and review requests.** When an agent in a listed profile calls `kanban_complete` or `kanban_request_review`, the plugin checks the exit status, required outputs, and checklist. Approving a gate card also needs a passing review for the exact current result. If a check fails, the tool call is blocked with the reason.
-- **Scope.** See [Not covered](docs/checks.md#not-covered) for terminal bypasses and executor permissions.
-- **Review invocation.** A review makes a separate call to the configured executor. For independent model context, configure that executor to create a fresh session. The record keeps the fingerprint of the result and the basis it was reviewed against, so an old pass does not count for a changed result.
-- **Approval bound to a result.** An apply approval is valid only for the fingerprint you approved. `examples/apply/merge_pr.sh` merges with `gh pr merge --match-head-commit <approved SHA>`, so GitHub rejects a head that changed after approval, and `examples/apply/copy_snapshot.py` copies only a snapshot whose hash is the approved one.
-- **Watch in the background.** A systemd timer scans the board and warns the main agent about stalled cards, missing next steps, and results that skipped a check. See [warning delivery](docs/checks.md#how-a-warning-is-delivered) for user escalation.
-- **Rejects have an end.** `taskwatch_reject` reopens a gate for another round, once per reject id, up to a cap. At the cap the card stays in review for you to decide.
+Every key, the submission format, delivery, and recovery are in [docs/configuration.md](docs/configuration.md).
 
 ## Commands
 
 ```sh
-hermes taskwatch init --hermes <path> [--board <slug>] [--root <dir>] [--unit-dir <dir>]
-hermes taskwatch doctor                  # check config, board, destinations, and Hermes
-hermes taskwatch scan                    # scan the board once
-hermes taskwatch check <card>            # show whether a card can move on, and why
-hermes taskwatch check <card> --apply    # print the approved fingerprint, or fail if it differs
+taskwatch --root <root> init [--unit-dir <dir>]    # write config; stage timer units
+taskwatch --root <root> submit <job.json>          # store an approved job
+taskwatch --root <root> scan                       # schedule job steps once
+taskwatch --root <root> run <job> --attempt <n>    # one reserved step; started by scan
+taskwatch --root <root> show [<job>]               # print job state
+taskwatch --root <root> watch <job>                # block until the job needs attention
+taskwatch --root <root> cancel <job> --reason <text>
+taskwatch --root <root> wait <job> --reason <text>   # park the job for approval
+taskwatch --root <root> approve <job> --reason <text> [--scope <text>]
+taskwatch --root <root> resume <job> --reason <text> # open a new recovery or fix cycle
 ```
 
-The main agent uses `taskwatch_approve` for [approval records](docs/configuration.md#approval-records), `taskwatch_create` to create cards, and `taskwatch_reject` to reject a gate. See [scan read failures](docs/configuration.md#scan-read-failures) for notification and exit behavior.
+`--root` defaults to `HERMES_HOME`, then `~/.hermes`. `watch` exits `0` when the job needs attention, `3` when its own `--timeout` passes, `2` on a usage error or unknown job, and `1` on another error. `run` is started by `scan`; do not run it alongside the service.
 
-## Known limitations
+## Limits
 
-- A retried delivery of the same wake makes the main agent write one judgment comment per delivery. There is no comment deduplication layer. The reject itself stays idempotent when the same stable `reject_id` is reused.
-- Rejecting a review-kind gate card is not supported, because Hermes has no public atomic reopen. `taskwatch_reject` refuses with `core update needed` and changes nothing. Work-gate rejection is supported.
-- Hermes consumes taskwatch's `--profile` option as its global profile selector. See [profile setup](docs/configuration.md#profile-setup) for the workaround and timer pinning.
-- After a plugin hook timeout, Hermes temporarily suppresses the same callback. The `pre_tool_call` guard fails closed during suppression, so even `kanban_block` is refused. A card can stay running until the worker exits and the dispatcher reclaims its dead claim.
-- Only a scripted model was used to exercise agent behavior. Behavior with a real model has not been tested.
+- A delivery success means the command reported acceptance, not that the person read the message.
+- A delivery whose outcome is unknown is never resent automatically.
+- The runner does not reconcile external outcomes.
+- Work, fix, and review quality depend on omp and its model; the checks cover only what code can verify.
 
 ## More
 
-- [docs/configuration.md](docs/configuration.md): every config key and the state directory.
-- [docs/checks.md](docs/checks.md): what each check blocks and when it can be removed.
+- [docs/configuration.md](docs/configuration.md): config keys, submission, delivery, recovery, state.
+- [docs/checks.md](docs/checks.md): what the job checks verify.
 - [docs/principles.md](docs/principles.md): the rules behind the design and their sources.
 - [docs/review](docs/review/README.md): review guidelines.
 - [docs/review-launch.md](docs/review-launch.md): launch a review through taskwatch or with omp alone, from the same guidelines.

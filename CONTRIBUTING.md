@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for your interest in hermes-taskwatch. The project is experimental, so the rules are short.
+Thank you for your interest in hermes-taskwatch. The rules are short.
 
 ## Before you start
 
@@ -25,7 +25,7 @@ CI runs the same commands. A pull request must pass all of them.
 ## Code style
 
 - Python 3.11 or later, no runtime dependencies.
-- Checks are pure functions. Config and state are frozen dataclasses. No inheritance. Only board access is a `Protocol`, so tests can use a fake board.
+- Checks are pure functions. Config and state are frozen dataclasses. No inheritance.
 - Keep changes minimal and focused. One function does one thing.
 - Tests must fail when the behavior they cover breaks.
 - Comments explain why, not what.
@@ -45,11 +45,11 @@ A commit message explains why the code is the way it is. The diff already shows 
 Example:
 
 ```
-fix(gate): block completion when the review is for an old commit
+fix(jobs): reject a review of an older result
 
-- A pass on an earlier commit let a changed result complete
-- The gate now compares the reviewed SHA with the current HEAD
-- Rejected: warn only, because the card would already move on
+- A pass on an earlier commit could deliver a result that changed later
+- The runner now compares the reviewed fingerprint with the current one
+- Rejected: warn only, because delivery would already go ahead
 ```
 
 ## Pull requests

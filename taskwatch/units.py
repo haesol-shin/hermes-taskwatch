@@ -1,4 +1,4 @@
-"""systemd user units."""
+"""systemd user timer text for the scan entry point."""
 
 
 def timer_text() -> str:
