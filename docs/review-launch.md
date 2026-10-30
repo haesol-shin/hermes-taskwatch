@@ -14,15 +14,17 @@ The launcher, `python -m taskwatch.reviewer_launch`, joins the agent definition 
 
 From the agent file's front matter:
 
-- `tools` becomes `--tools`. `task` is added when the agent may spawn anything, because spawning needs it.
+- `tools` is required. It becomes `--tools`; `tools: []` becomes `--no-tools`, because omitting the option would give omp's default tools, `edit` and `write` included. `task` is added when the agent may spawn anything, because spawning needs it.
 - `model` becomes `--model` (the first entry of a list); `thinking-level` becomes `--thinking`.
-- `spawns` is the list of sub-agents the review may use. Every other agent omp knows (bundled, user, and project) is disabled in an overlay, because omp enforces that list and a prompt does not. `spawns: "*"` disables none.
+- `spawns` is the list of sub-agents the review may use. Every other agent the launcher can find (bundled, user, and the project agent folder of every directory from the working directory up) is disabled in an overlay, because omp enforces that list and a prompt does not. `spawns: "*"` disables none. Name agents the folders do not show, such as plugin agents, with `--disable-agent <name>` (repeatable). `tools`, `spawns`, `model` and `thinking-level` may be inline lists or block lists; a value the launcher cannot read stops the launch instead of being dropped.
 
 The agent body, then every guideline file named by `--kind` (the README and common rules, then the kind's file; all kinds when `--kind` is omitted), then the optional `--layer` file become one file passed as `--append-system-prompt`. `autoloadSkills` and the nested `output` schema are ignored: omp does not apply an agent's output schema to a command-line session, so the verdict format comes from the launch layer.
 
 The overlay also sets `async.enabled: false`. With async on, `omp -p` ends before a background sub-agent reports, and the review has no verdict.
 
-The two files are written under a name that holds their content hash (default `$TMPDIR/taskwatch-reviewer/`; `--work-dir` moves it), so a rerun with unchanged sources reuses them. Options the launcher does not know pass through to omp after its own, so a later `--model` wins.
+The two files are written under a name that holds their content hash (default `$TMPDIR/taskwatch-reviewer/`; `--work-dir` moves it), so a rerun with unchanged sources reuses them. Options the launcher does not know pass through to omp *before* its own options, so the overlay it builds is the last one omp reads and a pass-through option cannot widen the review. `--no-extensions` is always set, and pass-through `--tools`, `--no-tools`, `--config`, `--append-system-prompt`, `--system-prompt`, `-e`, `--hook`, `--plugin-dir` and `--trusted-extension` are refused.
+
+Known limit: omp has no setting that restricts the tools of a command-line session to the list. Tools from MCP servers or custom-tool folders that omp loads on its own are not removed by `--tools`, and agents from plugin roots are removed only when named. Use a profile without them for a review that must be read-only by construction.
 
 ## Through taskwatch
 

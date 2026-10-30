@@ -9,7 +9,8 @@ An overlay turns async off, because ``omp -p`` and RPC runs end before a backgro
 reports, and disables every agent the definition does not allow. The prompt cannot enforce
 that list; omp refuses a disabled agent whatever the prompt says.
 
-Options not listed here pass through to omp unchanged, after the built options.
+Options not listed here pass through to omp, before the built options, so they cannot widen
+the tools, the extensions, the overlay or the system prompt; those that would are refused.
 """
 
 import argparse
@@ -29,6 +30,13 @@ from .review_docs import PROFILES, all_names, docs_dir, profile_names
 
 _KEY = re.compile(r"^([A-Za-z][\w-]*):[ \t]*(.*)$")
 _THINKING = ("thinking-level", "thinkingLevel", "thinking")
+_BLOCK_ITEM = re.compile(r"^[ \t]*-[ \t]+(.*\S)[ \t]*$")
+_READ_KEYS = frozenset({"tools", "spawns", "model", *_THINKING})
+# Options that would add tools, extensions or agents the definition did not allow.
+_REFUSED = frozenset(
+    {"--tools", "--no-tools", "--config", "-e", "--extension", "--hook", "--plugin-dir"}
+    | {"--trusted-extension", "--append-system-prompt", "--system-prompt"}
+)
 
 
 class LaunchError(Exception):
@@ -38,7 +46,7 @@ class LaunchError(Exception):
 @dataclass(frozen=True, slots=True)
 class Agent:
     body: str
-    tools: tuple[str, ...]
+    tools: tuple[str, ...]  # empty: no built-in tool
     spawns: tuple[str, ...] | None  # None: any agent; empty: none
     models: tuple[str, ...]
     thinking: str
@@ -71,11 +79,23 @@ def _front_matter(text: str) -> tuple[dict[str, str], str]:
     else:
         raise LaunchError("the agent definition front matter is not closed")
     fields: dict[str, str] = {}
-    for line in lines[1:end]:
-        # Nested blocks such as an output schema do not reach the command line.
+    for index, line in enumerate(lines[1:end], start=1):
         match = _KEY.match(line)
-        if match:
-            fields[match.group(1)] = match.group(2)
+        if not match:
+            continue
+        key, value = match.group(1), match.group(2).strip()
+        if key in _READ_KEYS and value == "":
+            # A block list: the dash lines that follow. Other nested blocks are not read.
+            items = []
+            for follow in lines[index + 1 : end]:
+                item = _BLOCK_ITEM.match(follow)
+                if not item:
+                    break
+                items.append(item.group(1))
+            value = ", ".join(items)
+        if key in _READ_KEYS and (value == "" or value[0] in "|>&*!"):
+            raise LaunchError(f"front matter `{key}` has no value this launcher can read")
+        fields[key] = value
     return fields, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
@@ -83,11 +103,13 @@ def parse_agent(text: str) -> Agent:
     fields, body = _front_matter(text)
     if not fields.get("name", "").strip():
         raise LaunchError("the agent definition needs a name")
-    tools = _items(fields.get("tools", ""))
+    if "tools" not in fields:
+        # An omitted list means omp's default tools, including edit and write.
+        raise LaunchError("the agent definition must list its tools (`tools: []` for none)")
     spawns = _items(fields.get("spawns", ""))
     return Agent(
         body=body,
-        tools=tools,
+        tools=_items(fields["tools"]),
         spawns=None if spawns == ("*",) else spawns,
         models=_items(fields.get("model", "")),
         thinking=next((v[0] for v in (_items(fields.get(k, "")) for k in _THINKING) if v), ""),
@@ -158,9 +180,10 @@ def plan(
         argv += ["--model", agent.models[0]]
     if agent.thinking:
         argv += ["--thinking", agent.thinking]
-    if tools:
-        argv += ["--tools", ",".join(tools)]
-    argv += ["--append-system-prompt", str(system_path), "--config", str(overlay_path)]
+    argv += ["--tools", ",".join(tools)] if tools else ["--no-tools"]
+    # Extension tools and agents are not in the definition's list.
+    argv += ["--no-extensions", "--append-system-prompt", str(system_path)]
+    argv += ["--config", str(overlay_path)]
     return Plan(tuple(argv), system, overlay, system_path, overlay_path)
 
 
@@ -176,13 +199,20 @@ def materialize(built: Plan) -> None:
 
 
 def _agent_dirs() -> list[Path]:
-    home = os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".omp" / "agent")
-    return [Path(home) / "agents", Path.cwd() / ".omp" / "agents"]
+    homes = {Path.home() / ".omp" / "agent"}
+    if os.environ.get("PI_CODING_AGENT_DIR"):
+        homes.add(Path(os.environ["PI_CODING_AGENT_DIR"]))
+    here = Path.cwd().resolve()
+    projects = [parent / ".omp" / "agents" for parent in (here, *here.parents)]
+    return [*(home / "agents" for home in sorted(homes)), *projects]
 
 
-def known_agents(omp: str) -> set[str]:
-    """Every agent name omp can spawn: the bundled ones, the user's and the project's."""
-    names: set[str] = set()
+def known_agents(omp: str, extra: Collection[str] = ()) -> set[str]:
+    """Agent names to keep out of the review: bundled, user, every project level, and extra.
+
+    Plugin agents are not in these folders; name them with --disable-agent.
+    """
+    names: set[str] = set(extra)
     with tempfile.TemporaryDirectory(prefix="taskwatch-agents-") as scratch:
         proc = subprocess.run(
             [omp, "agents", "unpack", "--dir", scratch, "--json"],
@@ -219,6 +249,9 @@ def _parser() -> argparse.ArgumentParser:
     cli.add_argument("--kind", action="append", default=[], help="review kind; default all kinds")
     cli.add_argument("--layer", type=Path, help="launch-path layer file appended last")
     cli.add_argument("--omp", default="omp", help="omp executable")
+    cli.add_argument(
+        "--disable-agent", action="append", default=[], help="also disable this agent (plugins)"
+    )
     cli.add_argument("--work-dir", type=Path, help="where the prompt and overlay files are written")
     cli.add_argument("--print-command", action="store_true", help="print the command, do not run")
     return cli
@@ -238,7 +271,7 @@ def build(args: argparse.Namespace) -> Plan:
         raise LaunchError(f"unknown review kind: {', '.join(unknown)}")
     agent = parse_agent(text)
     work = args.work_dir or Path(tempfile.gettempdir()) / "taskwatch-reviewer"
-    known = known_agents(args.omp) if agent.spawns is not None else set()
+    known = known_agents(args.omp, args.disable_agent) if agent.spawns is not None else set()
     return plan(agent, _guideline_files(folder, args.kind), layer, known, args.omp, work)
 
 
@@ -249,8 +282,13 @@ def main(argv: list[str] | None = None) -> int:
     except (LaunchError, KeyError, OSError) as exc:
         print(f"reviewer_launch: {exc}", file=sys.stderr)
         return 1
+    refused = [arg for arg in passthrough if arg.split("=", 1)[0] in _REFUSED]
+    if refused:
+        print(f"reviewer_launch: option would widen the review: {refused[0]}", file=sys.stderr)
+        return 1
     materialize(built)
-    command = [*built.argv, *passthrough]
+    # Built options go last: omp lets a later option and a later overlay win.
+    command = [built.argv[0], *passthrough, *built.argv[1:]]
     if args.print_command:
         print(shlex.join(command))
         return 0

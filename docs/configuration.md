@@ -280,8 +280,8 @@ the review step, in the target directory itself.
 
 The verdict is the result. A parsed `PASS` or `FAIL` is recorded and delivered; a `FAIL` does
 not start a fix, because there is nothing to fix. An answer with no acceptable verdict line, or a
-target that changed during the review, costs a round and reviews again, up to the same cap of
-three; after that the job stops for user judgment (`review_exhausted`). The review record and
+target that changed during the review, costs a round and reviews again. The cap is the one other jobs have: the first review plus three
+retries, four reviews in all; after that the job stops for user judgment (`review_exhausted`). The review record and
 job state are in `show <id>`.
 
 ### Timer entry point
