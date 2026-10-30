@@ -8,7 +8,7 @@
   {"id": "tests", "passes": true},
   {"id": "docs", "passes": true},
   {"id": "changelog", "passes": true},
-  {"id": "accept-review-only", "passes": false},
-  {"id": "accept-same-text", "passes": false},
-  {"id": "accept-edit-applies", "passes": false}
+  {"id": "accept-review-only", "passes": true},
+  {"id": "accept-same-text", "passes": true},
+  {"id": "accept-edit-applies", "passes": true}
 ]}
