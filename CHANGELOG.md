@@ -8,7 +8,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - `taskwatch watch <job>` blocks until a job reaches `approval_wait`, `user_wait`, `deliver_pending`, `done`, or `cancelled`, prints a short report, and exits (0 attention, 3 time limit, 2 unknown job). It reads `jobs.jsonl` without a lock or write and parses only new lines per poll, so a Hermes background process can wake the room that started the work.
 - Optional `review_command` selects a separate executor command for independent job reviews, falling back to `omp_command` when omitted.
 - Review-only jobs: submit a `review_target` (files or a commit) to review it without a work stage; the parsed verdict is recorded and delivered.
-- `python -m taskwatch.reviewer_launch` builds the omp reviewer command at run time from an omp agent definition and the `docs/review` guidelines, so a review started by taskwatch or by omp alone reads the same guideline text; `review_command` accepts `{guidelines}` and `{kind}`.
+- `python -m taskwatch.reviewer_launch` builds the omp reviewer command at run time from an omp agent definition and the `docs/review` guidelines, so a review started by taskwatch or by omp alone reads the same guideline text; `review_command` accepts `{guidelines}` and `{review}`.
 - Standalone approved job submission, parallel timer scheduling, transient omp RPC runs, interruption recovery, command checks, capped independent review fixes, and configured result delivery from `deliver_pending` to `done` through a literal-argument command with a fixed 60 second timeout. Only confirmed sends finish; every other outcome stops for user judgment without automatic resend. The existing Hermes plugin remains available.
 - `taskwatch_approve` records conversational start and apply approvals without hand-written JSON; retries return the existing approval and apply refuses a stale or dirty result.
 - `scan` warns through the configured user destination when the board is unreadable and exits 1; config failures exit 1 with the file and cause on stderr for the timer journal.
@@ -37,6 +37,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - Generated timer units pin the configured profile with `-p`, and the apply example requires `HERMES_PROFILE`.
 - `plugin.yaml` declares `taskwatch_approve`.
 - `doctor` no longer checks review-gate reopen support or fails solely because that support is unavailable.
+- The job field `kind` is now `review` with values `code`, `design`, and `source` (`document` and `research` merged into `source`), the reviewer launcher flag `--kind` is `--review`, the `review_command` placeholder `{kind}` is `{review}`, and `docs/review/source-checked-document.md` is `docs/review/source.md`; old `jobs.jsonl` records with `kind` still load.
 
 ### Fixed
 

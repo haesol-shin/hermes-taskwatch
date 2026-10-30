@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .jobs import JobState, _digest, _validate_record
+from .jobs import JobState, _digest, _upgrade_record, _validate_record
 from .state import RECORD_VERSION, RecordError, state_dir
 
 STOP_STAGES = frozenset({"approval_wait", "user_wait", "deliver_pending", "done", "cancelled"})
@@ -51,6 +51,7 @@ class _Tail:
                 continue
             if row.get("sha256") != _digest(job):
                 raise RecordError(f"{self.path.name}: corrupt job snapshot")
+            job = _upgrade_record(job)
             _validate_record(job)
             self.job = job
         self.offset += end

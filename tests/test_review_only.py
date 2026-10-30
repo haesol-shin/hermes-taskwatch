@@ -47,7 +47,7 @@ class Review:
             "approval_source": "msg-1",
             "approval_scope": "review only",
             "prompt": "REVIEW THIS\nline two",
-            "kind": "document",
+            "review": "source",
             "target": str(self.repo),
             "intent": str(self.tmp / "intent.md"),
             "spec": str(self.tmp / "spec.md"),
@@ -189,10 +189,16 @@ def test_a_commit_target_is_read_through_git_and_needs_the_commit_to_exist(tmp_p
     assert job.fingerprint == sha and job.reviews[-1]["final"]
 
 
-def test_review_command_receives_the_job_guideline_copy_and_kind(review):
+def test_review_command_receives_the_job_guideline_copy_and_review(review):
     review.config = replace(
         review.config,
-        review_command=(*review.config.omp_command, "--docs", "{guidelines}", "--kind", "{kind}"),
+        review_command=(
+            *review.config.omp_command,
+            "--docs",
+            "{guidelines}",
+            "--review",
+            "{review}",
+        ),
     )
     review.scenario([{"reply": PASS}])
     assert review.run() == 0
@@ -202,7 +208,7 @@ def test_review_command_receives_the_job_guideline_copy_and_kind(review):
         if "argv" in x
     )
     folder = review.jobs.folder(review.get())
-    assert argv[:4] == ["--docs", str(folder / "review-docs"), "--kind", "document"]
+    assert argv[:4] == ["--docs", str(folder / "review-docs"), "--review", "source"]
 
 
 # --- scheduling and delivery ----------------------------------------------------------------

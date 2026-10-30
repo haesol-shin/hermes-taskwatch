@@ -44,7 +44,7 @@ GIT = [
 
 
 class Env:
-    def __init__(self, tmp_path: Path, monkeypatch, kind: str = "document", target=None):
+    def __init__(self, tmp_path: Path, monkeypatch, review: str = "source", target=None):
         self.tmp = tmp_path
         self.jobs = Jobs(tmp_path / "root")
         self.config = JobConfig(omp_command=(sys.executable, str(FAKE)), rpc_timeout=5)
@@ -65,7 +65,7 @@ class Env:
                 "approval_source": "msg-1",
                 "approval_scope": "task-1",
                 "prompt": "ORIGINAL PROMPT TEXT\nline two",
-                "kind": kind,
+                "review": review,
                 "target": str(target),
                 "intent": str(tmp_path / "intent.md"),
                 "spec": str(tmp_path / "spec.md"),
@@ -190,7 +190,7 @@ def test_pipeline_from_work_to_deliver_pending(env):
     assert env.prompts()[0].startswith("ORIGINAL PROMPT TEXT\nline two")
     assert "msg-1" in env.prompts()[0] and "task-1" in env.prompts()[0]
     assert (env.folder() / "WORKFLOW.md").is_file()
-    assert (env.folder() / "review-docs" / "source-checked-document.md").is_file()
+    assert (env.folder() / "review-docs" / "source.md").is_file()
 
     assert env.run("check") == 0
     job = env.get()
@@ -504,7 +504,7 @@ def test_whole_review_text_survives_chunked_frames(env):
 
 def test_code_job_uses_worktree_and_committed_fingerprint(tmp_path, monkeypatch):
     repo = make_repo(tmp_path, "repo")
-    env = Env(tmp_path, monkeypatch, kind="code", target=repo)
+    env = Env(tmp_path, monkeypatch, review="code", target=repo)
     env.scenario([work_turn(run=[["git", "add", "-A"], [*GIT, "commit", "-m", "work"]])])
     assert env.run("work") == 0
     worktree = env.folder() / "worktree"

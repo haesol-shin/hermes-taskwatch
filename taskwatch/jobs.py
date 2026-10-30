@@ -29,7 +29,9 @@ STAGES = frozenset(
         "cancelled",
     }
 )
-KINDS = frozenset({"code", "design", "document", "research"})
+REVIEWS = frozenset({"code", "design", "source"})
+# Records written before the field was renamed used `kind` with four values.
+_OLD_KINDS = {"code": "code", "design": "design", "document": "source", "research": "source"}
 MAX_FIX_ROUNDS = 3
 MAX_RECOVERIES = 3
 
@@ -57,7 +59,7 @@ class JobState:
     approval_source: str
     approval_scope: str
     prompt: str
-    kind: str
+    review: str
     target: str
     intent: str
     spec: str
@@ -182,6 +184,7 @@ class Jobs:
                 job = row.get("job")
                 if not isinstance(job, dict) or row.get("sha256") != _digest(job):
                     raise RecordError("jobs.jsonl: corrupt job snapshot")
+                job = _upgrade_record(job)
                 _validate_record(job)
                 key, identifier = job["receipt_key"], job["id"]
                 if key in receipts and receipts[key] != identifier:
@@ -268,7 +271,7 @@ _COMMON_FIELDS = {
     "approval_source",
     "approval_scope",
     "prompt",
-    "kind",
+    "review",
     "target",
     "intent",
     "spec",
@@ -280,6 +283,10 @@ _OPTIONAL_FIELDS = {"inputs", "predecessors", "expected_wait_seconds", "approval
 def _submission(payload: dict) -> dict:
     # A review target replaces the work contract: there is no work stage to describe.
     review_only = isinstance(payload, dict) and "review_target" in payload
+    if isinstance(payload, dict) and "kind" in payload:
+        raise ValueError(
+            "`kind` is not accepted; name the field `review` (code, design, or source)"
+        )
     required = _COMMON_FIELDS | ({"review_target"} if review_only else _WORK_FIELDS)
     if required - payload.keys() or payload.keys() - required - _OPTIONAL_FIELDS:
         raise ValueError("submit has missing or unknown fields")
@@ -287,8 +294,8 @@ def _submission(payload: dict) -> dict:
     for key in required - {"outputs", "check_command", "review_target"}:
         if not isinstance(data[key], str) or not data[key].strip():
             raise ValueError(f"{key} must be nonempty text")
-    if data["kind"] not in KINDS:
-        raise ValueError("unknown job kind")
+    if data["review"] not in REVIEWS:
+        raise ValueError("unknown review; use code, design, or source")
     data["target"] = str(Path(data["target"]).resolve(strict=True))
     if not Path(data["target"]).is_dir():
         raise ValueError("target must be a directory")
@@ -365,11 +372,20 @@ def _resolve_commit(root: Path, revision: object) -> str:
     return sha
 
 
+def _upgrade_record(job: dict) -> dict:
+    """Read a record that still has the old `kind` field as its `review` value."""
+    if "kind" not in job or "review" in job:
+        return job
+    upgraded = {key: value for key, value in job.items() if key != "kind"}
+    upgraded["review"] = _OLD_KINDS.get(job["kind"])
+    return upgraded
+
+
 def _validate_record(job: dict) -> None:
     if not isinstance(job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", job["id"]):
         raise RecordError("jobs.jsonl: invalid job id")
-    if job.get("stage") not in STAGES or job.get("kind") not in KINDS:
-        raise RecordError("jobs.jsonl: unknown stage or kind")
+    if job.get("stage") not in STAGES or job.get("review") not in REVIEWS:
+        raise RecordError("jobs.jsonl: unknown stage or review")
     for key in ("attempt", "recoveries", "fix_rounds"):
         if type(job.get(key)) is not int or job[key] < 0:
             raise RecordError(f"jobs.jsonl: invalid {key}")

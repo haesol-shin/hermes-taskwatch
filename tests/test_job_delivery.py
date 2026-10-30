@@ -143,7 +143,7 @@ def board(tmp_path: Path, sender: Sender) -> Board:
 
 def finished_job(board: Board, **changes: object) -> JobState:
     """A job whose review passed and whose step service is already released."""
-    job_id = board.add(prompt=PROMPT, kind="document")
+    job_id = board.add(prompt=PROMPT, review="source")
     folder = board.jobs.folder(board.get(job_id))
     workspace = folder / "work"
     workspace.mkdir(parents=True)
@@ -484,7 +484,7 @@ def test_git_ignored_output_is_checked_at_delivery(
 ):
     monkeypatch.delenv("FAKE_JOBS_FILE")
     repo = make_repo(tmp_path, "repo")
-    env = Env(tmp_path, monkeypatch, kind="code", target=repo)
+    env = Env(tmp_path, monkeypatch, review="code", target=repo)
     commit = [
         ["git", "rm", "--cached", "out.txt"],
         ["git", "add", "-A"],

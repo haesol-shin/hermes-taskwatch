@@ -78,7 +78,7 @@ class Board:
             "approval_source": "msg-1",
             "approval_scope": "task-1",
             "prompt": "do it",
-            "kind": "code",
+            "review": "code",
             "target": str(target_dir),
             "intent": str(base / "intent.md"),
             "spec": str(base / "spec.md"),
@@ -522,7 +522,7 @@ def test_cancelled_job_holds_slot_until_stop_is_confirmed(tmp_path: Path) -> Non
 
 
 def test_job_waits_for_predecessors_to_pass(board: Board) -> None:
-    first = board.add(kind="document")
+    first = board.add(review="source")
     second = board.add(predecessors=[first])
     assert board.scan() == [first]
     assert board.get(second).wait_reason == f"predecessor:{first}"

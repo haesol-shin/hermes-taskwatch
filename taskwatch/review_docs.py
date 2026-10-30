@@ -1,4 +1,4 @@
-"""Where the shared review documents live, and which of them a review of a kind reads."""
+"""Where the shared review documents live, and which of them a review reads."""
 
 import sys
 from pathlib import Path
@@ -6,19 +6,17 @@ from pathlib import Path
 PROFILES = {
     "code": "code.md",
     "design": "design.md",
-    "document": "source-checked-document.md",
-    "research": "source-checked-document.md",
+    "source": "source.md",
 }
 COMMON = ("README.md", "common.md")
 
 
-def profile_names(kind: str) -> tuple[str, ...]:
-    return (*COMMON, PROFILES[kind])
+def profile_names(review: str) -> tuple[str, ...]:
+    return (*COMMON, PROFILES[review])
 
 
 def all_names() -> tuple[str, ...]:
-    kinds = dict.fromkeys(PROFILES.values())
-    return (*COMMON, *kinds)
+    return (*COMMON, *PROFILES.values())
 
 
 def docs_dir(folder: str) -> Path | None:
