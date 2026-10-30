@@ -36,7 +36,7 @@ def test_blocked_notice_allows_real_step_and_delivery(tmp_path, monkeypatch):
         deliver_command=(sys.executable, "-c", GATED_SENDER, "{message}", str(gate)),
     )
     board.service.states["u"] = "active"
-    waiting = board.add(kind="document")
+    waiting = board.add(review="source")
     board.set(waiting, stage="user_wait", wait_reason="synthetic_stop")
 
     def finish_and_deliver():

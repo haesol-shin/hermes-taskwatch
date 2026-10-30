@@ -12,7 +12,7 @@ REQUIRED_FILES = (
     "common.md",
     "code.md",
     "design.md",
-    "source-checked-document.md",
+    "source.md",
 )
 
 # Headings the reviewer relies on. A rename fails this check on purpose.
@@ -41,7 +41,7 @@ REQUIRED_SECTIONS = {
         "Sources",
     ),
     "design.md": ("What to review", "Decision method", "Scope", "Sources"),
-    "source-checked-document.md": ("What to review", "Coverage", "Sources"),
+    "source.md": ("What to review", "Coverage", "Sources"),
 }
 
 RULE_ID = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,3}-\d+)(?![A-Za-z0-9])")

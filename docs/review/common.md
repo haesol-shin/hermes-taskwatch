@@ -1,6 +1,6 @@
 # Common review rules
 
-Use this file for every review, then the kind file the assignment names.
+Use this file for every review, then the review file the assignment names.
 
 ## Precedence
 

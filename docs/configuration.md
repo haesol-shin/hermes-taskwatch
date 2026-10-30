@@ -166,13 +166,13 @@ work and fix always use `omp_command`. Both commands receive `--mode rpc --no-ui
 The `init` draft omits this optional key.
 
 In `review_command` (and only there), an argument that is exactly `{guidelines}` becomes the
-job's own copy of the review guidelines, and exactly `{kind}` becomes the job kind. That lets
-the review command be the [reviewer launcher](review-launch.md), which reads the agent
-definition and those guidelines when the review starts:
+job's own copy of the review guidelines, and exactly `{review}` becomes the job's `review`
+value. That lets the review command be the [reviewer launcher](review-launch.md), which
+reads the agent definition and those guidelines when the review starts:
 
 ```json
 "review_command": ["python3", "-m", "taskwatch.reviewer_launch", "--agent", "/srv/example/reviewer.md",
-                   "--guidelines", "{guidelines}", "--kind", "{kind}"]
+                   "--guidelines", "{guidelines}", "--review", "{review}"]
 ```
 
 ### Submit an approved job
@@ -185,7 +185,7 @@ Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
   "approval_source": "approval-message-1",
   "approval_scope": "Create local deliverables only",
   "prompt": "Write the approved deliverable and record execution evidence.",
-  "kind": "document",
+  "review": "source",
   "target": "/srv/example-target",
   "intent": "/srv/example-inputs/intent.md",
   "spec": "/srv/example-inputs/spec.md",
@@ -203,7 +203,10 @@ Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
 }
 ```
 
-`target` must exist. Kinds are `code`, `design`, `document`, and `research`.
+`target` must exist. `review` picks the review guidelines the reviewer reads: `code`,
+`design`, or `source` (a document that cites sources, such as research notes, summaries,
+or comparisons). Only `code` also runs the work in a Git worktree, because a code review
+reads the Git diff.
 Outputs, checklist, and progress paths are relative to the job workspace and
 cannot traverse outside it. `check_command` runs as argv without an implicit
 shell; name a shell explicitly only when the approved check needs one.
@@ -266,7 +269,7 @@ the review step, in the target directory itself.
   "approval_source": "approval-message-1",
   "approval_scope": "Review only; change nothing",
   "prompt": "Review this change against the intent and the spec.",
-  "kind": "code",
+  "review": "code",
   "target": "/srv/example-repo",
   "intent": "/srv/example-inputs/intent.md",
   "spec": "/srv/example-inputs/spec.md",

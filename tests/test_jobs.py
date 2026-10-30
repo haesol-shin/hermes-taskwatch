@@ -23,7 +23,7 @@ def payload(tmp_path: Path, receipt="message:1") -> dict:
         "approval_source": "message-1",
         "approval_scope": "local files",
         "prompt": "Preserve this full original prompt",
-        "kind": "document",
+        "review": "source",
         "target": str(source),
         "intent": str(intent),
         "spec": str(spec),
@@ -290,3 +290,48 @@ def test_watch_refuses_unknown_record_version(tmp_path):
     row["version"] = 2
     ledger.write_text(json.dumps(row) + "\n")
     assert main(["--root", str(root), "watch", job.id]) == 1
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [("code", "code"), ("design", "design"), ("document", "source"), ("research", "source")],
+)
+def test_record_written_with_the_old_kind_field_still_loads(tmp_path, old, new):
+    jobs = Jobs(tmp_path / "root")
+    job = jobs.submit(payload(tmp_path), 10)
+    data = {key: value for key, value in job.to_json().items() if key != "review"}
+    data["kind"] = old
+    encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    row = {"version": 1, "job": data, "sha256": hashlib.sha256(encoded).hexdigest()}
+    path = jobs.state.dir / "jobs.jsonl"
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert jobs.load()[job.id].review == new
+
+
+def test_watch_reads_an_old_record_with_kind(tmp_path, capsys):
+    jobs = Jobs(tmp_path / "root")
+    job = jobs.submit(payload(tmp_path), 10)
+    data = {key: value for key, value in job.to_json().items() if key != "review"}
+    data["kind"], data["stage"] = "research", "done"
+    encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    row = {"version": 1, "job": data, "sha256": hashlib.sha256(encoded).hexdigest()}
+    (jobs.state.dir / "jobs.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert main(["--root", str(tmp_path / "root"), "watch", job.id]) == 0
+    assert capsys.readouterr().out.startswith(f"job {job.id}: done")
+
+
+def test_new_submission_with_kind_is_refused_and_names_review(tmp_path):
+    jobs = Jobs(tmp_path / "root")
+    data = payload(tmp_path)
+    data["kind"] = data.pop("review")
+    with pytest.raises(ValueError, match="`review`"):
+        jobs.submit(data)
+    assert jobs.load() == {}
+
+
+def test_submission_refuses_the_retired_review_values(tmp_path):
+    jobs = Jobs(tmp_path / "root")
+    data = payload(tmp_path)
+    data["review"] = "research"
+    with pytest.raises(ValueError, match="code, design, or source"):
+        jobs.submit(data)

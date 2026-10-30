@@ -131,8 +131,8 @@ def agent_name(text: str) -> str:
     return _front_matter(text)[0].get("name", "").strip().strip("'\"")
 
 
-def _guideline_files(folder: Path, kinds: Sequence[str]) -> list[tuple[str, str]]:
-    names = list(dict.fromkeys(n for kind in kinds for n in profile_names(kind))) or list(
+def _guideline_files(folder: Path, reviews: Sequence[str]) -> list[tuple[str, str]]:
+    names = list(dict.fromkeys(n for review in reviews for n in profile_names(review))) or list(
         all_names()
     )
     rows = []
@@ -243,7 +243,9 @@ def _parser() -> argparse.ArgumentParser:
     cli.add_argument(
         "--guidelines", type=Path, help="guideline folder (default: the installed one)"
     )
-    cli.add_argument("--kind", action="append", default=[], help="review kind; default all kinds")
+    cli.add_argument(
+        "--review", action="append", default=[], help="review (code, design, source); default all"
+    )
     cli.add_argument("--layer", type=Path, help="launch-path layer file appended last")
     cli.add_argument("--omp", default="omp", help="omp executable")
     cli.add_argument("--work-dir", type=Path, help="where the prompt and overlay files are written")
@@ -260,12 +262,12 @@ def build(args: argparse.Namespace) -> Plan:
         layer = args.layer.read_text(encoding="utf-8") if args.layer else None
     except OSError as exc:
         raise LaunchError(f"input is unreadable: {exc}") from exc
-    unknown = [kind for kind in args.kind if kind not in PROFILES]
+    unknown = [review for review in args.review if review not in PROFILES]
     if unknown:
-        raise LaunchError(f"unknown review kind: {', '.join(unknown)}")
+        raise LaunchError(f"unknown review: {', '.join(unknown)}")
     agent = parse_agent(text)
     work = args.work_dir or Path(tempfile.gettempdir()) / "taskwatch-reviewer"
-    return plan(agent, _guideline_files(folder, args.kind), layer, args.omp, work)
+    return plan(agent, _guideline_files(folder, args.review), layer, args.omp, work)
 
 
 def main(argv: list[str] | None = None) -> int:

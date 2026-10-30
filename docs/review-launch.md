@@ -18,7 +18,7 @@ From the agent file's front matter:
 - `model` becomes `--model` (the first entry of a list); `thinking-level` becomes `--thinking`.
 - `spawns` is the list of sub-agents the review may use (`"*"`: any). It is enforced inside omp, not by the prompt: see below.
 
-The agent body, then every guideline file named by `--kind` (the README and common rules, then the kind's file; all kinds when `--kind` is omitted), then the optional `--layer` file become one file passed as `--append-system-prompt`. `autoloadSkills` and the nested `output` schema are ignored: omp does not apply an agent's output schema to a command-line session, so the verdict format comes from the launch layer.
+The agent body, then every guideline file named by `--review` (the README and common rules, then the review's file; all of them when `--review` is omitted), then the optional `--layer` file become one file passed as `--append-system-prompt`. `autoloadSkills` and the nested `output` schema are ignored: omp does not apply an agent's output schema to a command-line session, so the verdict format comes from the launch layer.
 
 The overlay also sets `async.enabled: false`. With async on, `omp -p` ends before a background sub-agent reports, and the review has no verdict.
 
@@ -35,7 +35,7 @@ Set the review step's command in `jobs-config.json`:
   "python3", "-m", "taskwatch.reviewer_launch",
   "--omp", "/usr/local/bin/omp",
   "--agent", "/srv/example/reviewer.md",
-  "--guidelines", "{guidelines}", "--kind", "{kind}"
+  "--guidelines", "{guidelines}", "--review", "{review}"
 ]
 ```
 
@@ -50,7 +50,7 @@ Run the same launcher by hand, with the other launch layer:
 ```sh
 python3 -m taskwatch.reviewer_launch \
   --agent examples/omp/reviewer.md \
-  --guidelines docs/review --kind code \
+  --guidelines docs/review --review code \
   --layer docs/launch/omp-alone.md \
   -p "Round 1. Review commit <sha> of the repository in the current directory against the intent in intent.md and the spec in spec.md."
 ```

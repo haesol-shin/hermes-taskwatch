@@ -6,11 +6,11 @@ Read these files at the start of a review. They are the shared rules for a code 
 
 1. Read this file.
 2. Read [common.md](common.md).
-3. Read the kind file the assignment names:
+3. Read the review file the assignment names:
    - code: [code.md](code.md)
    - design: [design.md](design.md)
-   - a document that cites sources: [source-checked-document.md](source-checked-document.md)
-4. If the assignment names more than one kind, read each named file. If it names none, read the kind that matches the deliverable. A mixed deliverable needs each matching kind.
+   - a document that cites sources: [source.md](source.md)
+4. If the assignment names more than one review, read each named file. If it names none, read the one that matches the deliverable. A mixed deliverable needs each matching file.
 5. Read the project rules named below.
 
 Do not edit the deliverable. If a required input is missing, follow the incomplete-review rule in the common file. Do not pass.

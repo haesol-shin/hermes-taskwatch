@@ -170,7 +170,7 @@ def _workspace(job: JobState, folder: Path) -> Path:
     if job.review_target is not None:
         # Nothing is built, so the reviewer reads the target itself.
         return Path(job.target)
-    if job.kind != "code":
+    if job.review != "code":
         path = folder / "work"
         path.mkdir(parents=True, exist_ok=True)
         return path
@@ -207,7 +207,7 @@ def _layer(name: str) -> str:
 
 def _guidelines(job: JobState, folder: Path) -> tuple[Path, ...]:
     """The job's own copy of the review profile, so a basis cannot drift while it runs."""
-    names = profile_names(job.kind)
+    names = profile_names(job.review)
     target = folder / "review-docs"
     target.mkdir(parents=True, exist_ok=True)
     source = None
@@ -273,7 +273,7 @@ def _approval_text(ctx: Ctx) -> str:
 def _workflow(ctx: Ctx) -> str:
     job = ctx.job
     work_inputs = "\n".join(f"- {p}" for p in job.inputs.get("work", [])) or "- (none)"
-    return f"""# Workflow for job {job.id} ({job.kind})
+    return f"""# Workflow for job {job.id} ({job.review})
 
 Work only in the workspace: {ctx.workspace}
 
@@ -313,7 +313,7 @@ def _agent_message(ctx: Ctx, resumed: bool) -> str:
     lines = [
         "",
         "---",
-        f"Taskwatch job {job.id} ({job.kind}). Read {ctx.folder / 'WORKFLOW.md'} first.",
+        f"Taskwatch job {job.id} ({job.review}). Read {ctx.folder / 'WORKFLOW.md'} first.",
         f"Workspace: {ctx.workspace}",
         f"Intent: {job.intent}",
         f"Spec: {job.spec}",
@@ -382,7 +382,7 @@ def _prior_lines(job: JobState, prior: list[Mapping]) -> list[str]:
         f"Previously reviewed fingerprint: {last['fingerprint']}",
         f"Current fingerprint: {job.fingerprint}",
     ]
-    if job.kind == "code":
+    if job.review == "code":
         lines.append(f"See: git diff {last['fingerprint']} {job.fingerprint}")
     return [*lines, "Findings of the last review:", last["body"]]
 
@@ -393,7 +393,7 @@ def _review_message(
     job = ctx.job
     prior = [r for r in job.reviews if isinstance(r, Mapping)]
     lines = [
-        f"You are the independent reviewer for job {job.id} ({job.kind}).",
+        f"You are the independent reviewer for job {job.id} ({job.review}).",
         f"Do not edit the deliverable. Write review evidence only under {review_root}.",
         f"Read these guidelines first: {', '.join(str(p) for p in guidelines)}",
         f"Intent: {job.intent}",
@@ -465,11 +465,11 @@ class Recorder:
 
 
 def _command(ctx: Ctx) -> tuple[str, ...]:
-    """The review step may use its own command; {guidelines} and {kind} name the job's own copy."""
+    """The review step may use its own command; {guidelines} and {review} name the job copy."""
     config = ctx.config
     if ctx.stage != "review" or config.review_command is None:
         return config.omp_command
-    fields = {"{guidelines}": str(ctx.folder / "review-docs"), "{kind}": ctx.job.kind}
+    fields = {"{guidelines}": str(ctx.folder / "review-docs"), "{review}": ctx.job.review}
     return tuple(fields.get(part, part) for part in config.review_command)
 
 
@@ -553,7 +553,7 @@ def _fingerprint(job: JobState, workspace: Path) -> str:
     if target is not None and "commit" in target:
         _git_ok(workspace, ["cat-file", "-e", f"{target['commit']}^{{commit}}"])
         return target["commit"]
-    if job.kind != "code" or target is not None:
+    if job.review != "code" or target is not None:
         return files_fingerprint(workspace, job.outputs)
     dirty = uncommitted_changes(workspace)
     if dirty:

@@ -69,7 +69,7 @@ def omp(tmp_path, monkeypatch) -> str:
 def guidelines(tmp_path) -> Path:
     folder = tmp_path / "guidelines"
     folder.mkdir()
-    for name in (*profile_names("code"), "design.md", "source-checked-document.md"):
+    for name in (*profile_names("code"), "design.md", "source.md"):
         (folder / name).write_text(f"rule text of {name}\n", encoding="utf-8")
     return folder
 
@@ -155,7 +155,7 @@ def test_main_without_print_command_replaces_itself_with_omp(
 @pytest.mark.parametrize(
     "extra, message",
     [
-        (["--kind", "poetry"], "unknown review kind"),
+        (["--review", "poetry"], "unknown review"),
         (["--guidelines", "{tmp}/nowhere"], "unreadable"),
         (["--agent", "{tmp}/missing.md"], "unreadable"),
     ],
@@ -170,15 +170,15 @@ def test_bad_input_stops_before_omp_runs(
     assert message in capsys.readouterr().err
 
 
-def test_the_shipped_guidelines_and_launch_layers_load_for_every_kind():
+def test_the_shipped_guidelines_and_launch_layers_load_for_every_review():
     folder = docs_dir("review")
-    for kind in ("code", "design", "document", "research"):
-        names = [name for name, _ in _guideline_files(folder, [kind])]
-        assert names == list(profile_names(kind))
+    for review in ("code", "design", "source"):
+        names = [name for name, _ in _guideline_files(folder, [review])]
+        assert names == list(profile_names(review))
     assert [n for n, _ in _guideline_files(folder, [])][-3:] == [
         "code.md",
         "design.md",
-        "source-checked-document.md",
+        "source.md",
     ]
     for layer in ("taskwatch.md", "omp-alone.md"):
         assert (docs_dir("launch") / layer).read_text(encoding="utf-8").strip()
@@ -187,7 +187,7 @@ def test_the_shipped_guidelines_and_launch_layers_load_for_every_kind():
 def test_the_job_copy_and_the_source_folder_give_the_same_guideline_text(tmp_path):
     copy = tmp_path / "job"
     copy.mkdir()
-    _guidelines(SimpleNamespace(kind="code"), copy)  # type: ignore[arg-type]
+    _guidelines(SimpleNamespace(review="code"), copy)  # type: ignore[arg-type]
     source = _guideline_files(docs_dir("review"), ["code"])
     assert _guideline_files(copy / "review-docs", ["code"]) == source
 
