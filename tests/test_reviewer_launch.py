@@ -352,3 +352,47 @@ def test_agents_of_parent_projects_and_named_extras_are_disabled(tmp_path, guide
     )
     overlay = Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")
     assert '"up"' in overlay and '"from-plugin"' in overlay and '"scout"' not in overlay
+
+
+@pytest.mark.parametrize(
+    "path, text",
+    [
+        (".omp/tools/t.ts", "export default {}"),
+        ("a/.claude/tools/t.js", "x"),
+        ("mcp.json", "{}"),
+        ("a/.mcp.json", "{}"),
+        ("agent-dir/mcp.json", "{}"),
+        ("agent-dir/plugins/p/package.json", "{}"),
+    ],
+)
+def test_a_source_the_tool_list_cannot_restrict_stops_the_launch(
+    tmp_path, guidelines, omp, capsys, monkeypatch, path, text
+):
+    file = tmp_path / path
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(text, encoding="utf-8")
+    (tmp_path / "a").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path / "a")
+    monkeypatch.setattr(os, "execvp", lambda *a: pytest.fail("omp must not start"))
+    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
+    assert main([*args, "--work-dir", str(tmp_path / "w")]) == 1
+    assert "outside its tool list" in capsys.readouterr().err
+
+
+def test_agents_of_every_config_base_are_disabled(tmp_path, guidelines, omp, capsys):
+    folder = tmp_path / ".claude" / "agents"
+    folder.mkdir(parents=True)
+    (folder / "c.md").write_text("---\nname: cl\ndescription: d\n---\nx\n", encoding="utf-8")
+    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
+    argv = command(capsys, *args, "--work-dir", str(tmp_path / "w"))
+    assert '"cl"' in Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")
+
+
+def test_options_that_move_the_final_environment_are_refused(
+    tmp_path, guidelines, omp, capsys, monkeypatch
+):
+    monkeypatch.setattr(os, "execvp", lambda *a: pytest.fail("omp must not start"))
+    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
+    for extra in (["--cwd", "/x"], ["--profile=p"], ["--add-dir", "/x"]):
+        assert main([*args, "--work-dir", str(tmp_path / "w"), *extra]) == 1
+    assert "would widen" in capsys.readouterr().err

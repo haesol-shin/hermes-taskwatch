@@ -24,7 +24,7 @@ The overlay also sets `async.enabled: false`. With async on, `omp -p` ends befor
 
 The two files are written under a name that holds their content hash (default `$TMPDIR/taskwatch-reviewer/`; `--work-dir` moves it), so a rerun with unchanged sources reuses them. Options the launcher does not know pass through to omp *before* its own options, so the overlay it builds is the last one omp reads and a pass-through option cannot widen the review. `--no-extensions` is always set, and pass-through `--tools`, `--no-tools`, `--config`, `--append-system-prompt`, `--system-prompt`, `-e`, `--hook`, `--plugin-dir` and `--trusted-extension` are refused.
 
-Known limit: omp has no setting that restricts the tools of a command-line session to the list. Tools from MCP servers or custom-tool folders that omp loads on its own are not removed by `--tools`, and agents from plugin roots are removed only when named. Use a profile without them for a review that must be read-only by construction.
+Enforcement. omp has no command-line option that limits a session to its tool list for custom tools and MCP servers, so the launcher refuses to start when it finds one: a `tools` folder with scripts, `mcp.json` or `.mcp.json`, or a `plugins` folder in the agent directory or in any config folder (`.omp`, `.claude`, `.codex`, and the other supported ones) from the working directory up. It also refuses `--cwd`, `--add-dir` and `--profile`, which would move the environment it checked. Agents found in those same folders are disabled by name. What it cannot see stays open: opt-in foreign user-level sources, paths named in omp settings, and agents added by plugins outside these folders (name those with `--disable-agent`).
 
 ## Through taskwatch
 

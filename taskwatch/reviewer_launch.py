@@ -34,7 +34,18 @@ _BLOCK_ITEM = re.compile(r"^[ \t]*-[ \t]+(.*\S)[ \t]*$")
 _READ_KEYS = frozenset({"tools", "spawns", "model", *_THINKING})
 # Options that would add tools, extensions or agents the definition did not allow.
 _REFUSED = frozenset(
-    {"--tools", "--no-tools", "--config", "-e", "--extension", "--hook", "--plugin-dir"}
+    {
+        "--cwd",
+        "--add-dir",
+        "--profile",
+        "--tools",
+        "--no-tools",
+        "--config",
+        "-e",
+        "--extension",
+        "--hook",
+        "--plugin-dir",
+    }
     | {"--trusted-extension", "--append-system-prompt", "--system-prompt"}
 )
 
@@ -198,19 +209,62 @@ def materialize(built: Plan) -> None:
         os.replace(part, path)
 
 
-def _agent_dirs() -> list[Path]:
+_PROJECT_BASES = (
+    ".omp",
+    ".claude",
+    ".codex",
+    ".gemini",
+    ".cursor",
+    ".windsurf",
+    ".opencode",
+    ".github",
+)
+_TOOL_FILES = ("*.ts", "*.js", "*.mjs", "*.cjs")
+_MCP_FILES = ("mcp.json", ".mcp.json")
+
+
+def _agent_homes() -> list[Path]:
     homes = {Path.home() / ".omp" / "agent"}
     if os.environ.get("PI_CODING_AGENT_DIR"):
         homes.add(Path(os.environ["PI_CODING_AGENT_DIR"]))
+    return sorted(homes)
+
+
+def _roots() -> list[Path]:
+    """Every place omp reads agents, custom tools and MCP servers from for this process."""
     here = Path.cwd().resolve()
-    projects = [parent / ".omp" / "agents" for parent in (here, *here.parents)]
-    return [*(home / "agents" for home in sorted(homes)), *projects]
+    projects = [parent / base for parent in (here, *here.parents) for base in _PROJECT_BASES]
+    return [*_agent_homes(), *projects]
+
+
+def _agent_dirs() -> list[Path]:
+    return [root / "agents" for root in _roots()]
+
+
+def unrestrictable_sources() -> list[str]:
+    """Tool sources a command-line session cannot be restricted away from.
+
+    omp's `--tools` does not apply to custom tools or MCP servers it discovers, and no option
+    turns that discovery off, so a review that finds one cannot keep the tool list. It stops.
+    """
+    found = []
+    for root in _roots():
+        found += [str(p) for pattern in _TOOL_FILES for p in (root / "tools").glob(pattern)]
+        found += [str(root / name) for name in _MCP_FILES if (root / name).is_file()]
+    here = Path.cwd().resolve()
+    found += [str(d / n) for d in (here, *here.parents) for n in _MCP_FILES if (d / n).is_file()]
+    for home in _agent_homes():
+        plugins = home / "plugins"
+        if plugins.is_dir() and any(plugins.iterdir()):
+            found.append(str(plugins))
+    return sorted(set(found))
 
 
 def known_agents(omp: str, extra: Collection[str] = ()) -> set[str]:
     """Agent names to keep out of the review: bundled, user, every project level, and extra.
 
-    Plugin agents are not in these folders; name them with --disable-agent.
+    Agents of plugins are refused earlier, with the other sources that cannot be restricted;
+    --disable-agent names more.
     """
     names: set[str] = set(extra)
     with tempfile.TemporaryDirectory(prefix="taskwatch-agents-") as scratch:
@@ -271,6 +325,12 @@ def build(args: argparse.Namespace) -> Plan:
         raise LaunchError(f"unknown review kind: {', '.join(unknown)}")
     agent = parse_agent(text)
     work = args.work_dir or Path(tempfile.gettempdir()) / "taskwatch-reviewer"
+    blocked = unrestrictable_sources()
+    if blocked:
+        raise LaunchError(
+            "custom tools, MCP servers or plugins would join the review outside its tool list: "
+            + ", ".join(blocked)
+        )
     known = known_agents(args.omp, args.disable_agent) if agent.spawns is not None else set()
     return plan(agent, _guideline_files(folder, args.kind), layer, known, args.omp, work)
 
