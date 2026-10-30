@@ -24,6 +24,7 @@ taskwatch --root <root> init
 taskwatch --root <root> submit <approved-job.json>
 taskwatch --root <root> scan
 taskwatch --root <root> show <job-id>
+taskwatch --root <root> watch <job-id>
 ```
 
 Submission returns only after the job and copied inputs are durable. The receipt key
@@ -31,6 +32,21 @@ deduplicates retries. `scan` reserves up to the configured number of parallel sl
 and starts transient user services. A job keeps its slot across work, check, review,
 and fixes. Jobs sharing a target cannot overlap. Approval and user-judgment waits
 release their slots after their service has stopped.
+
+`watch` blocks until the job reaches `approval_wait`, `user_wait`, `deliver_pending`,
+`done`, or `cancelled`, prints a short report (at most 20 lines), and exits. Exit codes: `0`
+needs attention, `3` the watcher's own `--timeout` (default 82800 seconds) passed with
+nothing to report, `2` usage error or unknown job, `1` other error. It polls every
+`--interval` seconds (default 30, minimum 5), exits at once if the job already stopped, and is
+read only: it takes no lock and writes nothing. After the first read it parses only the lines
+appended to `jobs.jsonl`. Hermes can wake the room that submitted a job:
+
+```python
+terminal(background=True, notify_on_complete=True, command="taskwatch --root <root> watch <id>")
+```
+
+The report is a hint; re-read the state with `show` before acting. After `approve` or
+`resume` the job is `queued`, so a new watcher waits for the next stop.
 
 Successful jobs stop at `deliver_pending`. The next `scan` writes a delivery message
 and runs the configured `deliver_command`, with a fixed 60 second timeout. Only a
