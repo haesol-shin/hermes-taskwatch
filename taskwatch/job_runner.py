@@ -23,9 +23,16 @@ from pathlib import Path
 from .checks import checklist_problems
 from .evidence import basis_of
 from .executor import _verdict_line
-from .fingerprint import FingerprintError, files_fingerprint, head_sha, uncommitted_changes
+from .fingerprint import (
+    FingerprintError,
+    _git_ok,
+    files_fingerprint,
+    head_sha,
+    uncommitted_changes,
+)
 from .job_rpc import RpcAborted, RpcClient, RpcError
 from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobConfig, Jobs, JobState, progress_fingerprint
+from .review_docs import docs_dir, profile_names
 
 STEPS = frozenset({"work", "fix", "check", "review"})
 EVIDENCE_EVERY = 15.0
@@ -46,12 +53,8 @@ _EVENT_FIELDS = (
     "isTerminal",
     "yielded",
 )
-_PROFILES = {
-    "code": "code.md",
-    "design": "design.md",
-    "document": "source-checked-document.md",
-    "research": "source-checked-document.md",
-}
+# The one verdict problem a review-only job accepts: a FAIL is its result, not a retry.
+_FAIL_PROBLEM = "the reviewer did not pass the result"
 
 
 def _now() -> float:
@@ -164,6 +167,9 @@ def _context(jobs: Jobs, config: JobConfig, job: JobState) -> Ctx:
 
 
 def _workspace(job: JobState, folder: Path) -> Path:
+    if job.review_target is not None:
+        # Nothing is built, so the reviewer reads the target itself.
+        return Path(job.target)
     if job.kind != "code":
         path = folder / "work"
         path.mkdir(parents=True, exist_ok=True)
@@ -184,19 +190,24 @@ def _workspace(job: JobState, folder: Path) -> Path:
     return path
 
 
-def _docs_source() -> Path:
-    for base in (
-        Path(__file__).resolve().parent.parent / "docs" / "review",
-        Path(sys.prefix) / "share" / "hermes-taskwatch" / "review",
-    ):
-        if (base / "common.md").is_file():
-            return base
-    raise StepError("review guidelines were not found")
+def _docs_source(folder: str = "review") -> Path:
+    source = docs_dir(folder)
+    if source is None:
+        raise StepError(f"{folder} documents were not found")
+    return source
+
+
+def _layer(name: str) -> str:
+    """The launch-path text of this path, read when the message is built."""
+    try:
+        return (_docs_source("launch") / name).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise StepError(f"launch layer is unreadable: {name}: {exc}") from exc
 
 
 def _guidelines(job: JobState, folder: Path) -> tuple[Path, ...]:
     """The job's own copy of the review profile, so a basis cannot drift while it runs."""
-    names = ("README.md", "common.md", _PROFILES[job.kind])
+    names = profile_names(job.kind)
     target = folder / "review-docs"
     target.mkdir(parents=True, exist_ok=True)
     source = None
@@ -219,7 +230,8 @@ def _prepare(ctx: Ctx) -> dict[str, str]:
     job, folder = ctx.job, ctx.folder
     (folder / "logs").mkdir(exist_ok=True)
     _write_durable(folder / "prompt.md", job.prompt)
-    _write_durable(folder / "WORKFLOW.md", _workflow(ctx))
+    if job.review_target is None:
+        _write_durable(folder / "WORKFLOW.md", _workflow(ctx))
     return {str(p): _file_sha(p) for p in _guidelines(job, folder)}
 
 
@@ -337,11 +349,48 @@ def _fix_reason(job: JobState) -> str:
     return f"The independent review did not pass.\n{problems}\n\nReview:\n{record['body']}"
 
 
+def _subject_lines(ctx: Ctx) -> list[str]:
+    job, target = ctx.job, ctx.job.review_target
+    if target is None:
+        log = job.checks[-1]["log"] if job.checks else ""
+        return [
+            f"Reviewed result: {ctx.workspace} (files: {', '.join(job.outputs)})",
+            f"Result fingerprint: {job.fingerprint}",
+            f"Check output: {log}",
+        ]
+    if "commit" in target:
+        what = f"commit {target['commit']} of the repository at {ctx.workspace}"
+    else:
+        what = f"files {', '.join(target['files'])} under {ctx.workspace}"
+    return [f"Review target: {what}", f"Target fingerprint: {job.fingerprint}"]
+
+
+def _prior_lines(job: JobState, prior: list[Mapping]) -> list[str]:
+    last = prior[-1]
+    if job.review_target is not None:
+        # Nothing was fixed between rounds: the last answer could not be accepted.
+        problems = "; ".join(last["problems"]) or "none recorded"
+        return [
+            "",
+            f"This is round {len(prior) + 1}. The last answer was not accepted: {problems}.",
+            "Review the whole target again and answer in full.",
+        ]
+    lines = [
+        "",
+        f"This is re-review round {len(prior) + 1}. Review the changes since the last review",
+        "and whether each finding below is resolved. Do not reopen settled ground.",
+        f"Previously reviewed fingerprint: {last['fingerprint']}",
+        f"Current fingerprint: {job.fingerprint}",
+    ]
+    if job.kind == "code":
+        lines.append(f"See: git diff {last['fingerprint']} {job.fingerprint}")
+    return [*lines, "Findings of the last review:", last["body"]]
+
+
 def _review_message(
     ctx: Ctx, guidelines: tuple[Path, ...], resumed: bool, review_root: Path
 ) -> str:
     job = ctx.job
-    log = job.checks[-1]["log"] if job.checks else ""
     prior = [r for r in job.reviews if isinstance(r, Mapping)]
     lines = [
         f"You are the independent reviewer for job {job.id} ({job.kind}).",
@@ -349,33 +398,16 @@ def _review_message(
         f"Read these guidelines first: {', '.join(str(p) for p in guidelines)}",
         f"Intent: {job.intent}",
         f"Spec: {job.spec}",
-        f"Reviewed result: {ctx.workspace} (files: {', '.join(job.outputs)})",
-        f"Result fingerprint: {job.fingerprint}",
-        f"Check output: {log}",
+        *_subject_lines(ctx),
         "If you delegate to subagents, wait until each one finished.",
         "",
         "Original request, in full:",
         job.prompt,
     ]
     if prior:
-        last = prior[-1]
-        lines += [
-            "",
-            f"This is re-review round {len(prior) + 1}. Review the changes since the last review",
-            "and whether each finding below is resolved. Do not reopen settled ground.",
-            f"Previously reviewed fingerprint: {last['fingerprint']}",
-            f"Current fingerprint: {job.fingerprint}",
-        ]
-        if job.kind == "code":
-            lines.append(f"See: git diff {last['fingerprint']} {job.fingerprint}")
-        lines += ["Findings of the last review:", last["body"]]
+        lines += _prior_lines(job, prior)
     lines += [f"Review input: {p}" for p in job.inputs.get("review", [])]
-    lines += [
-        "",
-        "Answer in your final message. It must contain exactly one line that is a JSON object:",
-        '{"verdict": "PASS" or "FAIL", "blocking": true or false, "reviewer": "<name>"}',
-        "A PASS cannot be blocking. After that line, give every finding with its location.",
-    ]
+    lines += ["", _layer("taskwatch.md")]
     if resumed:
         lines += ["", "You were interrupted. Review the current state again and answer in full."]
     return "\n".join(lines)
@@ -432,15 +464,19 @@ class Recorder:
             self.abort.set()
 
 
+def _command(ctx: Ctx) -> tuple[str, ...]:
+    """The review step may use its own command; {guidelines} and {kind} name the job's own copy."""
+    config = ctx.config
+    if ctx.stage != "review" or config.review_command is None:
+        return config.omp_command
+    fields = {"{guidelines}": str(ctx.folder / "review-docs"), "{kind}": ctx.job.kind}
+    return tuple(fields.get(part, part) for part in config.review_command)
+
+
 def _converse(ctx: Ctx, session_dir: Path, message: Callable[[bool], str], text: bool) -> str:
     timeout = float(ctx.config.rpc_timeout)
     recorder = Recorder(ctx)
-    command = (
-        ctx.config.review_command
-        if ctx.stage == "review" and ctx.config.review_command is not None
-        else ctx.config.omp_command
-    )
-    argv = [*command, "--mode", "rpc", "--no-ui"]
+    argv = [*_command(ctx), "--mode", "rpc", "--no-ui"]
     stderr = ctx.folder / "logs" / f"omp-a{ctx.job.attempt}.stderr"
     session_dir.mkdir(parents=True, exist_ok=True)
     watcher = threading.Thread(target=recorder.watch, daemon=True)
@@ -513,7 +549,11 @@ def _progress_changes(job: JobState, workspace: Path, now: float) -> dict:
 
 
 def _fingerprint(job: JobState, workspace: Path) -> str:
-    if job.kind != "code":
+    target = job.review_target
+    if target is not None and "commit" in target:
+        _git_ok(workspace, ["cat-file", "-e", f"{target['commit']}^{{commit}}"])
+        return target["commit"]
+    if job.kind != "code" or target is not None:
         return files_fingerprint(workspace, job.outputs)
     dirty = uncommitted_changes(workspace)
     if dirty:
@@ -649,17 +689,33 @@ def _check_route(job: JobState, problems: list[str]) -> dict:
 # --- review --------------------------------------------------------------------------------
 
 
-def _review_step(ctx: Ctx) -> int:
+def _pin_subject(ctx: Ctx) -> Ctx:
+    """A review-only job has no check to fix the result, so the review step does it."""
+    try:
+        fingerprint = _fingerprint(ctx.job, ctx.workspace)
+        basis = _basis(ctx.job, ctx.folder)
+    except (ValueError, OSError) as exc:
+        raise StepError(f"the review target cannot be read: {exc}") from exc
+    _apply(ctx, lambda j: {"fingerprint": fingerprint, "basis": basis})
+    return replace(ctx, job=replace(ctx.job, fingerprint=fingerprint, basis=basis))
+
+
+def _result_stale(ctx: Ctx) -> bool:
     job = ctx.job
     try:
-        stale = _fingerprint(job, ctx.workspace) != job.fingerprint or (
-            _basis(job, ctx.folder) != job.basis
-        )
+        changed = _fingerprint(job, ctx.workspace) != job.fingerprint
+        return changed or _basis(job, ctx.folder) != job.basis or not job.fingerprint
     except (ValueError, OSError):
-        stale = True
-    if not job.fingerprint or stale:
-        _apply(ctx, lambda j: _requeue_check(j))
+        return True
+
+
+def _review_step(ctx: Ctx) -> int:
+    if ctx.job.review_target is not None:
+        ctx = _pin_subject(ctx)
+    elif _result_stale(ctx):
+        _apply(ctx, lambda j: _requeue(j))
         return 0
+    job = ctx.job
     guidelines = _guidelines(job, ctx.folder)
     name = f"review-{len(job.reviews)}-{len(job.checks)}"
     review_root = ctx.folder / "reviews" / name
@@ -677,7 +733,7 @@ def _review_step(ctx: Ctx) -> int:
     problems = _evidence_problems(ctx)
     if problems:
         # The reviewer saw evidence that no longer holds, so its verdict is not accepted.
-        _apply(ctx, lambda j: {**_requeue_check(j), "error": "; ".join(problems)})
+        _apply(ctx, lambda j: {**_requeue(j), "error": "; ".join(problems)})
         return 0
     record = _judge(ctx, text)
     _apply(ctx, lambda j: _review_route(j, record))
@@ -687,6 +743,8 @@ def _review_step(ctx: Ctx) -> int:
 def _evidence_problems(ctx: Ctx) -> list[str]:
     """Recheck what the accepted check rested on; a PASS must not outlive it."""
     job = ctx.job
+    if job.review_target is not None:
+        return []
     check = job.checks[-1] if job.checks else None
     if (
         check is None
@@ -704,10 +762,12 @@ def _evidence_problems(ctx: Ctx) -> list[str]:
     return _file_problems(job, ctx.workspace)
 
 
-def _requeue_check(job: JobState) -> dict:
+def _requeue(job: JobState) -> dict:
+    """Send a result whose evidence went stale back to the step that produces the evidence."""
+    first = "review" if job.review_target is not None else "check"
     changes = {
-        "stage": "check",
-        "resume_stage": "check",
+        "stage": first,
+        "resume_stage": first,
         "fingerprint": "",
         "basis": "",
         "ended_at": _now(),
@@ -749,8 +809,14 @@ def _judge(ctx: Ctx, body: str) -> dict:
     except (ValueError, OSError) as exc:
         record["problems"].append(f"the result cannot be fingerprinted: {exc}")
     if record["verdict"] == "FAIL":
-        record["problems"].append("the reviewer did not pass the result")
+        record["problems"].append(_FAIL_PROBLEM)
     record["ok"] = not record["problems"] and record["verdict"] == "PASS" and not record["blocking"]
+    # A review-only job has nothing to fix: a parsed verdict on an unchanged target is its result.
+    record["final"] = (
+        job.review_target is not None
+        and record["verdict"] != ""
+        and all(problem == _FAIL_PROBLEM for problem in record["problems"])
+    )
     return record
 
 
@@ -760,16 +826,17 @@ def _review_route(job: JobState, record: dict) -> dict:
         "ended_at": _now(),
         "events": _event(job, type="review", ok=record["ok"], verdict=record["verdict"]),
     }
-    if record["ok"]:
+    if record["ok"] or record["final"]:
         done = {"stage": "deliver_pending", "resume_stage": "deliver_pending", "error": ""}
         return {**changes, **done}
     message = "; ".join(record["problems"])
+    retry = "review" if job.review_target is not None else "fix"
     if job.fix_rounds < MAX_FIX_ROUNDS:
-        # Reserved here, before the fix runs: a failed fix attempt still used its round.
+        # Reserved here, before the retry runs: a failed attempt still used its round.
         return {
             **changes,
-            "stage": "fix",
-            "resume_stage": "fix",
+            "stage": retry,
+            "resume_stage": retry,
             "fix_rounds": job.fix_rounds + 1,
             "error": message,
         }

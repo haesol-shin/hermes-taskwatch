@@ -6,7 +6,7 @@ Use this file with the common guidelines when the deliverable is a code change.
 
 **K-1.** Review in this order, and finish each stage before the next: the spec and the project rules; correctness and failure modes; consistency of docs, messages, and tests; code quality last.
 
-**K-2.** Read the changed code with its callers and the tests that cover it. A dispatch point outside the diff still has to be read before you treat the producing side as correct.
+**K-2.** Start from the patch. Read the changed code with its callers and the tests that cover it. Read the spec, contract, or user-facing document that describes the changed behavior; search the docs and tests for the changed symbols, messages, and error codes to find it. A dispatch point outside the diff still has to be read before you treat the producing side as correct.
 
 **K-3.** Keep going after the first blocker. Report every finding that meets the reporting bar.
 
@@ -19,6 +19,7 @@ Use this file with the common guidelines when the deliverable is a code change.
 - Unintentional: not a choice the change documents on purpose.
 - Introduced here: not a pre-existing problem the change did not touch.
 - Proportionate: do not demand a rigor the rest of the codebase does not use.
+- No unstated assumption: nothing assumed about the codebase or the author's intent that the evidence does not show.
 
 **K-5.** When nothing meets that bar, the verdict is correct and there are no findings. Do not invent a problem.
 
@@ -31,6 +32,7 @@ Use this file with the common guidelines when the deliverable is a code change.
 - Names say what the thing is.
 - A test fails when the behavior it covers breaks.
 - A comment explains why, at the density the repository already uses. It does not restate the code.
+- A changelog, where the repository keeps one, has one short line per user-visible change and nothing internal.
 
 ## Failure modes
 
@@ -42,7 +44,7 @@ Use this file with the common guidelines when the deliverable is a code change.
 
 **K-10.** Docs, error messages, and tests that still describe the old behavior are findings when the change left them that way.
 
-**K-11.** If the assignment includes test or CI output, a failure caused by the change is a finding. If it does not, say in the verdict that tests were not checked.
+**K-11.** If the assignment includes test or CI output, a failure caused by the change is a finding. In the verdict, say which tests and commands you ran, or that tests were not checked.
 
 ## Re-review
 

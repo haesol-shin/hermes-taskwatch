@@ -118,3 +118,27 @@ def test_duplicate_rule_id_in_one_file_fails(tmp_path: Path):
     common.write_text(common.read_text(encoding="utf-8") + "\n**C-1.** Again.\n", encoding="utf-8")
     errors = CHECKER.check_review_dir(tmp_path)
     assert "common.md: duplicate rule id: C-1" in errors
+
+
+def rule_lines(folder: Path) -> dict[str, str]:
+    found = {}
+    for path in folder.glob("*.md"):
+        if path.name == "MAPPING.md":
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("**") and ".**" in line:
+                rule_id, _, text = line[2:].partition(".**")
+                found[rule_id] = text.strip()
+    return found
+
+
+def test_mapping_names_only_rules_that_exist():
+    rules = rule_lines(ROOT / "docs" / "review")
+    mapping = (ROOT / "docs" / "review" / "MAPPING.md").read_text(encoding="utf-8")
+    named = set(CHECKER.RULE_ID.findall(mapping))
+    assert named and named <= rules.keys(), sorted(named - rules.keys())
+
+
+def test_no_rule_text_is_repeated_across_the_guidelines():
+    texts = list(rule_lines(ROOT / "docs" / "review").values())
+    assert len(texts) == len(set(texts))

@@ -37,6 +37,8 @@ The rules generalize three existing review instructions, with personal product r
 - A read-only code-review brief: review order, what is worth reporting, claims, silent drops at a boundary, hidden fallbacks, severity, and re-review.
 - A deliverable-review role: purpose, prior corrections, and checks for a document that cites sources.
 
+[MAPPING.md](MAPPING.md) lists each rule of those instructions, and of the omp default reviewer, and where it now lives or why it stays out. A review does not read it. Rules that differ by launch path (verdict format, who counts rounds, tool restrictions, where inputs come from) are in the launch layers under `docs/launch/`, not in this folder.
+
 Public practice used while generalizing:
 
 - [Google's code review standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve a change that improves the codebase; a nit does not block; facts over preference.

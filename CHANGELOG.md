@@ -6,6 +6,8 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 
 ### Added
 - Optional `review_command` selects a separate executor command for independent job reviews, falling back to `omp_command` when omitted.
+- Review-only jobs: submit a `review_target` (files or a commit) to review it without a work stage; the parsed verdict is recorded and delivered.
+- `python -m taskwatch.reviewer_launch` builds the omp reviewer command at run time from an omp agent definition and the `docs/review` guidelines, so a review started by taskwatch or by omp alone reads the same guideline text; `review_command` accepts `{guidelines}` and `{kind}`.
 - Standalone approved job submission, parallel timer scheduling, transient omp RPC runs, interruption recovery, command checks, capped independent review fixes, and configured result delivery from `deliver_pending` to `done` through a literal-argument command with a fixed 60 second timeout. Only confirmed sends finish; every other outcome stops for user judgment without automatic resend. The existing Hermes plugin remains available.
 - `taskwatch_approve` records conversational start and apply approvals without hand-written JSON; retries return the existing approval and apply refuses a stale or dirty result.
 - `scan` warns through the configured user destination when the board is unreadable and exits 1; config failures exit 1 with the file and cause on stderr for the timer journal.

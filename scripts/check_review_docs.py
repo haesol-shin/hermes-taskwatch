@@ -29,6 +29,7 @@ REQUIRED_SECTIONS = {
         "Rounds",
         "Incomplete review",
         "Repository conventions",
+        "Finding content",
         "Sources",
     ),
     "code.md": (

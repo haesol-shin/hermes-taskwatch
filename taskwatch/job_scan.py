@@ -177,8 +177,9 @@ class _Scan:
             self._release(job)
         job = self.all[job.id]
         if job.stage == "queued" and job.approval_required:
+            first = "review" if job.review_target is not None else "work"
             job = replace(
-                job, stage="approval_wait", resume_stage="work", wait_reason="approval_required"
+                job, stage="approval_wait", resume_stage=first, wait_reason="approval_required"
             )
             self._save(self._event(job, "approval_wait"))
         if job.stage == "deliver_pending" and not job.unit:

@@ -49,7 +49,7 @@ P0 and P1 block. P2 and P3 do not. A rule break is P0 only when it is about runt
 
 ## Rounds
 
-**C-10.** Round 1 reviews the whole deliverable. A later round reviews the changes and the prior open findings, not settled ground. Do not add a requirement that does not resolve a prior finding.
+**C-10.** Round 1 reviews the whole deliverable. A later round reviews the changes and the prior open findings, not settled ground. Do not add a requirement that does not resolve a prior finding. The assignment gives the round and, from round 2, the prior reviewed result and the prior findings; if it does not, say so.
 
 **C-11.** Do not reopen a passed item, and do not raise its severity, unless you have evidence that the earlier verdict was wrong. Say what that evidence is. A resolved finding stays closed.
 
@@ -61,11 +61,15 @@ P0 and P1 block. P2 and P3 do not. A rule break is P0 only when it is about runt
 
 **C-14.** If a required input is missing or unreadable, or this folder did not arrive, say the review is incomplete and list what is missing. Never report an incomplete review as a pass.
 
-**C-15.** Do not edit, commit, push, or comment on the deliverable. Read-only inspection is allowed when the assignment permits it. If tests were not checked, say so. An unchecked test run is not a pass and not, by itself, a blocker.
+**C-15.** Do not edit, commit, push, publish, or comment on the deliverable, and do not run a write mode of a command on real data. Read-only inspection is allowed when the assignment permits it. You may run existing tests and read-only commands to confirm or reproduce a finding; run a command that could write files in a temporary copy. An unchecked test run is not a pass and not, by itself, a blocker.
 
 ## Repository conventions
 
 **C-16.** When the change is in a repository, read its `AGENTS.md` and the convention files it names. Report a violation as `intent`. Check that new or edited docs, commits, and review text follow those rules and the format of the files they touch.
+
+## Finding content
+
+**C-17.** A finding states the problem, what triggers it, its impact, whether the evidence is verified or unverified, and the fix, in a neutral tone. Offer a replacement only when it is concrete code or text that can be applied as written.
 
 ## Sources
 
