@@ -46,6 +46,3 @@ max-complexity = 15
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# The repo root is a Hermes plugin package with relative imports. Pytest must not
-# collect it as a package, so conftest discovery stops at tests/.
-addopts = "--confcutdir=tests"

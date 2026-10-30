@@ -39,6 +39,10 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 - `doctor` no longer checks review-gate reopen support or fails solely because that support is unavailable.
 - The job field `kind` is now `review` with values `code`, `design`, and `source` (`document` and `research` merged into `source`), the reviewer launcher flag `--kind` is `--review`, the `review_command` placeholder `{kind}` is `{review}`, and `docs/review/source-checked-document.md` is `docs/review/source.md`; old `jobs.jsonl` records with `kind` still load.
 
+### Removed
+
+- The Hermes Kanban plugin: the plugin entry, cards, completion gate, Hermes tools, the `hermes taskwatch` command, their examples, and the shared-module code only they used. The `taskwatch` job runner is unchanged.
+
 ### Fixed
 
 - Verify declared output contents, including Git-ignored files, against PASS before delivery, and send stop notices without holding the global state lock.
