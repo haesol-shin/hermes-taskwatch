@@ -1,8 +1,11 @@
 """The reviewer launcher builds the omp command from an agent file and the guideline folder."""
 
+import json
 import os
 import shlex
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,9 +18,7 @@ from taskwatch.review_docs import docs_dir, profile_names
 from taskwatch.reviewer_launch import (
     LaunchError,
     _guideline_files,
-    disabled_agents,
     main,
-    overlay_text,
     parse_agent,
     plan,
     system_prompt,
@@ -113,42 +114,10 @@ def test_a_definition_without_usable_front_matter_is_refused(text):
 # --- the command ----------------------------------------------------------------------------
 
 
-def built(tmp_path, agent_text=AGENT, known=("task", "scout", "reviewer", "spec"), layer=None):
+def built(tmp_path, agent_text=AGENT, layer=None):
     agent = parse_agent(agent_text)
     files = [("common.md", "common text\n"), ("code.md", "code text\n")]
-    return plan(agent, files, layer, set(known), "omp", tmp_path / "work")
-
-
-def test_command_carries_tools_model_prompt_and_overlay(tmp_path):
-    built_plan = built(tmp_path)
-    argv = list(built_plan.argv)
-    assert argv[0] == "omp"
-    assert argv[argv.index("--model") + 1] == "@slow"
-    assert argv[argv.index("--thinking") + 1] == "high"
-    # Spawning needs the task tool even when the definition does not list it.
-    assert argv[argv.index("--tools") + 1] == "read,find,grep,bash,task"
-    assert argv[argv.index("--append-system-prompt") + 1] == str(built_plan.system_path)
-    assert argv[argv.index("--config") + 1] == str(built_plan.overlay_path)
-
-
-def test_overlay_turns_async_off_and_disables_every_agent_not_allowed():
-    agent = parse_agent(AGENT)
-    assert disabled_agents(agent, {"task", "scout", "reviewer", "spec"}) == [
-        "reviewer",
-        "spec",
-        "task",
-    ]
-    assert overlay_text(["reviewer", "task"]) == (
-        'async:\n  enabled: false\ntask:\n  disabledAgents: ["reviewer", "task"]\n'
-    )
-
-
-def test_wildcard_spawns_disable_nothing_and_no_spawns_drops_the_task_tool(tmp_path):
-    wildcard = built(tmp_path, AGENT.replace("spawns: scout", "spawns: '*'"))
-    assert wildcard.overlay.endswith("disabledAgents: []\n")
-    none = built(tmp_path, AGENT.replace("spawns: scout\n", ""))
-    assert "task" not in none.argv[list(none.argv).index("--tools") + 1].split(",")
-    assert '"scout"' in none.overlay
+    return plan(agent, files, layer, "omp", tmp_path / "work")
 
 
 def test_prompt_is_body_then_each_guideline_in_full_then_the_layer():
@@ -161,9 +130,9 @@ def test_prompt_is_body_then_each_guideline_in_full_then_the_layer():
 
 
 def test_editing_a_guideline_changes_the_next_command_and_files(tmp_path):
-    first = plan(parse_agent(AGENT), [("c.md", "v1\n")], None, set(), "omp", tmp_path)
-    again = plan(parse_agent(AGENT), [("c.md", "v1\n")], None, set(), "omp", tmp_path)
-    second = plan(parse_agent(AGENT), [("c.md", "v2\n")], None, set(), "omp", tmp_path)
+    first = plan(parse_agent(AGENT), [("c.md", "v1\n")], None, "omp", tmp_path)
+    again = plan(parse_agent(AGENT), [("c.md", "v1\n")], None, "omp", tmp_path)
+    second = plan(parse_agent(AGENT), [("c.md", "v2\n")], None, "omp", tmp_path)
     assert first.argv == again.argv
     assert first.system_path != second.system_path
     reviewer_launch.materialize(second)
@@ -171,53 +140,6 @@ def test_editing_a_guideline_changes_the_next_command_and_files(tmp_path):
 
 
 # --- the program ----------------------------------------------------------------------------
-
-
-def test_main_reads_the_folder_at_run_time_and_passes_other_options_to_omp(
-    tmp_path, guidelines, omp, capsys
-):
-    base = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines)]
-    base += ["--omp", omp, "--work-dir", str(tmp_path / "work"), "--kind", "code"]
-    argv = command(capsys, *base, "--mode", "rpc", "--no-ui", "-p", "go")
-    assert argv[0] == omp and argv[1:6] == ["--mode", "rpc", "--no-ui", "-p", "go"]
-    # Built options follow the passthrough, so the overlay is the last one omp reads.
-    assert argv[-2] == "--config" and argv[-1].endswith("overlay.yml")
-    system = Path(argv[argv.index("--append-system-prompt") + 1])
-    assert "rule text of common.md" in system.read_text(encoding="utf-8")
-    assert "rule text of design.md" not in system.read_text(encoding="utf-8")
-    overlay = Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")
-    # Bundled agents come from omp itself, and the allowed one stays enabled.
-    assert '"reviewer", "sonic", "task"' in overlay
-
-    (guidelines / "common.md").write_text("EDITED RULE\n", encoding="utf-8")
-    after = command(capsys, *base)
-    assert "EDITED RULE" in Path(after[after.index("--append-system-prompt") + 1]).read_text(
-        encoding="utf-8"
-    )
-
-
-def test_user_and_project_agents_are_disabled_too(tmp_path, guidelines, omp, capsys):
-    user = tmp_path / "agent-dir" / "agents"
-    user.mkdir(parents=True)
-    (user / "spec.md").write_text("---\nname: spec\ndescription: d\n---\nx\n", encoding="utf-8")
-    project = tmp_path / ".omp" / "agents"
-    project.mkdir(parents=True)
-    (project / "helper.md").write_text(
-        "---\nname: helper\ndescription: d\n---\nx\n", encoding="utf-8"
-    )
-    argv = command(
-        capsys,
-        "--agent",
-        str(agent_file(tmp_path)),
-        "--guidelines",
-        str(guidelines),
-        "--omp",
-        omp,
-        "--work-dir",
-        str(tmp_path / "work"),
-    )
-    overlay = Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")
-    assert '"helper"' in overlay and '"spec"' in overlay and '"scout"' not in overlay
 
 
 def test_main_without_print_command_replaces_itself_with_omp(
@@ -246,23 +168,6 @@ def test_bad_input_stops_before_omp_runs(
     args += [part.replace("{tmp}", str(tmp_path)) for part in extra]
     assert main(args) == 1
     assert message in capsys.readouterr().err
-
-
-def test_a_failing_omp_listing_stops_the_launch(tmp_path, guidelines, capsys, monkeypatch):
-    broken = tmp_path / "broken"
-    broken.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
-    broken.chmod(0o755)
-    monkeypatch.chdir(tmp_path)
-    args = [
-        "--agent",
-        str(agent_file(tmp_path)),
-        "--guidelines",
-        str(guidelines),
-        "--omp",
-        str(broken),
-    ]
-    assert main([*args, "--work-dir", str(tmp_path / "w")]) == 1
-    assert "bundled agents" in capsys.readouterr().err
 
 
 def test_the_shipped_guidelines_and_launch_layers_load_for_every_kind():
@@ -323,8 +228,58 @@ def test_missing_tools_is_refused_and_empty_tools_means_no_tools(tmp_path):
     assert spawning.argv[list(spawning.argv).index("--tools") + 1] == "task"
 
 
-def test_extensions_are_off(tmp_path):
-    assert "--no-extensions" in built(tmp_path).argv
+def test_command_carries_tools_model_prompt_overlay_and_the_only_extension(tmp_path):
+    built_plan = built(tmp_path)
+    argv = list(built_plan.argv)
+    assert argv[argv.index("--model") + 1] == "@slow"
+    assert argv[argv.index("--thinking") + 1] == "high"
+    # Spawning needs the task tool even when the definition does not list it.
+    assert argv[argv.index("--tools") + 1] == "read,find,grep,bash,task"
+    assert argv[argv.index("--trusted-extension") + 1] == str(built_plan.extension_path)
+    assert argv[argv.index("--append-system-prompt") + 1] == str(built_plan.system_path)
+    assert argv[-2:] == ["--config", str(built_plan.overlay_path)]
+    assert built_plan.overlay == "async:\n  enabled: false\n"
+    assert "--no-extensions" not in argv and built_plan.extension_path.is_absolute()
+
+
+def test_extension_holds_the_tool_and_spawn_lists(tmp_path):
+    text = built(tmp_path).extension
+    assert '["bash", "find", "grep", "read", "task"]' in text
+    assert 'const AGENTS = ["scout"];' in text
+    wildcard = built(tmp_path, AGENT.replace("spawns: scout", "spawns: '*'")).extension
+    assert "const AGENTS = null;" in wildcard
+    none = built(tmp_path, AGENT.replace("spawns: scout\n", "")).extension
+    assert "const AGENTS = [];" in none and '"task"' not in none.split("const AGENTS")[0]
+
+
+BUN = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun")
+
+
+@pytest.mark.skipif(not Path(BUN).exists(), reason="bun is not installed")
+def test_generated_extension_blocks_what_the_lists_do_not_allow(tmp_path):
+    ext = built(tmp_path).extension
+    path = tmp_path / "enforce.mjs"
+    path.write_text(ext, encoding="utf-8")
+    probe = tmp_path / "probe.mjs"
+    probe.write_text(
+        f"""import ext from {json.dumps(str(path))};
+const on = {{}};
+ext({{ on: (name, fn) => {{ on[name] = fn; }} }});
+const main = {{ agent: {{ kind: "main" }} }};
+const sub = {{ agent: {{ kind: "sub" }} }};
+console.log(JSON.stringify([
+  await on.tool_call({{ toolName: "read" }}, main),
+  (await on.tool_call({{ toolName: "write" }}, main)).block,
+  (await on.tool_call({{ toolName: "mcp_x" }}, main)).block,
+  await on.tool_call({{ toolName: "write" }}, sub),
+  await on.before_subagent_spawn({{ agent: "scout" }}),
+  (await on.before_subagent_spawn({{ agent: "task" }})).block,
+]));
+""",
+        encoding="utf-8",
+    )
+    out = subprocess.run([BUN, str(probe)], capture_output=True, text=True, check=True).stdout
+    assert json.loads(out) == [None, True, True, None, None, True]
 
 
 @pytest.mark.parametrize(
@@ -336,63 +291,4 @@ def test_options_that_would_widen_the_review_are_refused(
     monkeypatch.setattr(os, "execvp", lambda *a: pytest.fail("omp must not start"))
     args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
     assert main([*args, "--work-dir", str(tmp_path / "w"), *extra]) == 1
-    assert "would widen" in capsys.readouterr().err
-
-
-def test_agents_of_parent_projects_and_named_extras_are_disabled(tmp_path, guidelines, omp, capsys):
-    parent = tmp_path / ".omp" / "agents"
-    parent.mkdir(parents=True)
-    (parent / "up.md").write_text("---\nname: up\ndescription: d\n---\nx\n", encoding="utf-8")
-    deep = tmp_path / "a" / "b"
-    deep.mkdir(parents=True)
-    os.chdir(deep)
-    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
-    argv = command(
-        capsys, *args, "--work-dir", str(tmp_path / "w"), "--disable-agent", "from-plugin"
-    )
-    overlay = Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")
-    assert '"up"' in overlay and '"from-plugin"' in overlay and '"scout"' not in overlay
-
-
-@pytest.mark.parametrize(
-    "path, text",
-    [
-        (".omp/tools/t.ts", "export default {}"),
-        ("a/.claude/tools/t.js", "x"),
-        ("mcp.json", "{}"),
-        ("a/.mcp.json", "{}"),
-        ("agent-dir/mcp.json", "{}"),
-        ("agent-dir/plugins/p/package.json", "{}"),
-    ],
-)
-def test_a_source_the_tool_list_cannot_restrict_stops_the_launch(
-    tmp_path, guidelines, omp, capsys, monkeypatch, path, text
-):
-    file = tmp_path / path
-    file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text(text, encoding="utf-8")
-    (tmp_path / "a").mkdir(exist_ok=True)
-    monkeypatch.chdir(tmp_path / "a")
-    monkeypatch.setattr(os, "execvp", lambda *a: pytest.fail("omp must not start"))
-    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
-    assert main([*args, "--work-dir", str(tmp_path / "w")]) == 1
-    assert "outside its tool list" in capsys.readouterr().err
-
-
-def test_agents_of_every_config_base_are_disabled(tmp_path, guidelines, omp, capsys):
-    folder = tmp_path / ".claude" / "agents"
-    folder.mkdir(parents=True)
-    (folder / "c.md").write_text("---\nname: cl\ndescription: d\n---\nx\n", encoding="utf-8")
-    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
-    argv = command(capsys, *args, "--work-dir", str(tmp_path / "w"))
-    assert '"cl"' in Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")
-
-
-def test_options_that_move_the_final_environment_are_refused(
-    tmp_path, guidelines, omp, capsys, monkeypatch
-):
-    monkeypatch.setattr(os, "execvp", lambda *a: pytest.fail("omp must not start"))
-    args = ["--agent", str(agent_file(tmp_path)), "--guidelines", str(guidelines), "--omp", omp]
-    for extra in (["--cwd", "/x"], ["--profile=p"], ["--add-dir", "/x"]):
-        assert main([*args, "--work-dir", str(tmp_path / "w"), *extra]) == 1
     assert "would widen" in capsys.readouterr().err
