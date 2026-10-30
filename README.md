@@ -136,12 +136,6 @@ hermes taskwatch check <card> --apply    # print the approved fingerprint, or fa
 
 The main agent uses `taskwatch_approve` for [approval records](docs/configuration.md#approval-records), `taskwatch_create` to create cards, and `taskwatch_reject` to reject a gate. See [scan read failures](docs/configuration.md#scan-read-failures) for notification and exit behavior.
 
-## Examples
-
-- [examples/worker/run_executor.py](examples/worker/run_executor.py) runs the executor in the foreground and records the run that the gate reads.
-- [examples/skills/taskwatch-worker/SKILL.md](examples/skills/taskwatch-worker/SKILL.md) tells a Kanban worker how to use it.
-- [examples/apply](examples/apply) holds the two apply scripts.
-
 ## Known limitations
 
 - A retried delivery of the same wake makes the main agent write one judgment comment per delivery. There is no comment deduplication layer. The reject itself stays idempotent when the same stable `reject_id` is reused.
