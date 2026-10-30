@@ -30,7 +30,7 @@ taskwatch --root <root> watch <job-id>
 Submission returns only after the job and copied inputs are durable. The receipt key
 deduplicates retries. `scan` reserves up to the configured number of parallel slots
 and starts transient user services. A job keeps its slot across work, check, review,
-and fixes. Jobs sharing a target cannot overlap. Approval and user-judgment waits
+and fixes. Jobs that share a target folder cannot overlap; code jobs each have their own worktree and can. Approval and user-judgment waits
 release their slots after their service has stopped.
 
 `watch` blocks until the job reaches `approval_wait`, `user_wait`, `deliver_pending`,

@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from . import job_workspace
 from .checks import checklist_problems
 from .evidence import basis_of
 from .executor import _verdict_line
@@ -161,39 +162,37 @@ def _stop(jobs: Jobs, job: JobState, reason: str, message: str) -> int:
 
 def _context(jobs: Jobs, config: JobConfig, job: JobState) -> Ctx:
     folder = jobs.folder(job)
-    workspace = _workspace(job, folder, job_environment(config.env))
+    workspace, described = _workspace(job, folder, config, job_environment(config.env))
     ctx = Ctx(jobs, config, replace(job, workspace=str(workspace)), folder, workspace)
     hashes = _prepare(ctx)
     recorded = job.guideline_hashes
     if recorded is not None and recorded != hashes:
         raise InputsChanged("a copied review profile does not match its recorded hash")
-    _apply(ctx, lambda j: {"workspace": str(workspace), "guideline_hashes": hashes})
+    _apply(ctx, lambda j: {"workspace": str(workspace), "guideline_hashes": hashes, **described})
     return ctx
 
 
-def _workspace(job: JobState, folder: Path, env: Mapping[str, str]) -> Path:
+def _workspace(
+    job: JobState, folder: Path, config: JobConfig, env: Mapping[str, str]
+) -> tuple[Path, dict]:
+    """The step's folder, and the record fields a newly created work folder adds."""
     if job.review_target is not None:
         # Nothing is built, so the reviewer reads the target itself.
-        return Path(job.target)
+        return Path(job.target), {}
     if job.review != "code":
         path = folder / "work"
         path.mkdir(parents=True, exist_ok=True)
-        return path
+        return path, {}
     path = folder / "worktree"
     if (path / ".git").exists():
-        return path
+        # A resumed job keeps its folder and branch.
+        return path, job_workspace.adopt(job, path, env)
     if path.exists() and any(path.iterdir()):
         raise StepError("the job worktree folder exists but is not a worktree")
-    proc = subprocess.run(
-        ["git", "-C", job.target, "worktree", "add", "--detach", str(path), "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    if proc.returncode != 0:
-        raise StepError(f"git worktree add failed: {proc.stderr.strip()}")
-    return path
+    try:
+        return path, job_workspace.create(job, path, config, env)
+    except (job_workspace.WorkspaceError, subprocess.TimeoutExpired) as exc:
+        raise StepError(str(exc) or type(exc).__name__) from exc
 
 
 def _docs_source(folder: str = "review") -> Path:

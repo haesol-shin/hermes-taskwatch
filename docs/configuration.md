@@ -190,6 +190,35 @@ leaving it empty keeps the inherited environment. The `init` draft omits this ke
 "env": {"PATH": "~/.local/bin:~/.bun/bin:$PATH"}
 ```
 
+### Code job work folders
+
+A `code` job that builds a result works in `state/jobs/<id>/worktree`, on its own branch.
+
+- Base. Before the worktree is created, the runner runs `git fetch origin <default branch>`
+  without prompting and with a 5 second cap. The default branch is the one `origin/HEAD`
+  names, or `main`. The worktree starts at `origin/<default branch>`. If the fetch fails or the
+  target has no `origin`, the local ref is used and the job records `base_note: "base may be
+  stale: <reason>"`. The optional submission field `base` (a commit or branch of the target)
+  replaces the base, for work stacked on another job's branch; it is used as written, with no
+  fetch. Afterwards `base` in the record is the commit used.
+- Branch. `<branch_prefix><first 8 characters of the job id>`. Optionally add
+  `"branch_prefix"` to `jobs-config.json` (default `"taskwatch/"`): letters, digits, `_` and
+  `-`, with parts joined by `/`. A resumed job reuses its worktree and branch.
+- Cleanup. When a job reaches `done` or `cancelled`, and not at `deliver_pending`, the scan runs
+  `git worktree remove` without `--force`. A folder with uncommitted or untracked files, or
+  that git refuses to remove, stays and `workspace_state` says why (`kept: <reason>`); the scan
+  retries it. The job folder, records, reviews and logs are never deleted.
+- Branch deletion. After a fetch, the branch is deleted only when it is integrated: its tip is
+  in the history of `origin/<default branch>`, or merging it onto that branch changes nothing
+  (a squash merge already holds its content). Otherwise `branch_state` stays `kept` and the
+  scan checks again later. `integrated` means integrated but git refused the deletion. The
+  integration check needs git 2.38 or later (`git merge-tree --write-tree`); on an older git
+  only a branch in the history is deleted.
+- Record fields: `base`, `base_note`, `branch`, `workspace_state` (`active`, `removed`,
+  `kept: <reason>`) and `branch_state` (`kept`, `integrated`, `deleted`), shown by
+  `taskwatch show`. Records from before these fields exist keep their detached worktree and are
+  not cleaned up.
+
 ### Job records
 
 A job keeps its checklist and progress files in its job folder (`state/jobs/<id>/`), next to
@@ -276,9 +305,9 @@ the next append. Corrupt committed records block scheduling rather than
 letting a job start or pass. Inspect the scan service journal for diagnostics.
 
 Each job has `state/jobs/<id>/`, a separate workspace, copied inputs, a
-`WORKFLOW.md`, and execution evidence. Code jobs use a detached git worktree
-at the target's HEAD. Results remain there for inspection; this command
-does not merge or apply them.
+`WORKFLOW.md`, and execution evidence. Code jobs use a git worktree on their own
+branch; see [Code job work folders](#code-job-work-folders). This command does not merge or
+apply results.
 
 #### Review-only jobs
 
@@ -431,7 +460,9 @@ move the job to `queued`, so a watcher started after them waits for the next sto
 ### Recovery and decisions
 
 The job retains its parallel slot through work, checks, review, and fixes.
-The target is locked across these stages. A blocked predecessor leaves
+A job that works in a shared folder (a non-code job, or a review-only job) locks its target
+across these stages; a code job that builds a result does not, because its worktree is its
+own (see [Code job work folders](#code-job-work-folders)). A blocked predecessor leaves
 the successor queued. An unrelated target can still start.
 Dead or reboot-interrupted runs resume only after the old service is known
 to have stopped. An unknown service outcome requires user judgment.

@@ -137,8 +137,8 @@ def test_parallel_jobs_fill_slots_and_the_rest_wait(tmp_path: Path) -> None:
 
 
 def test_same_target_waits_until_the_first_job_leaves(board: Board) -> None:
-    first = board.add(target="shared")
-    second = board.add(target="shared")
+    first = board.add(target="shared", review="source")
+    second = board.add(target="shared", review="source")
     other = board.add(target="elsewhere")
     assert board.scan() == [first, other]
     assert board.get(second).wait_reason == "target"
@@ -406,8 +406,8 @@ def test_unconfirmed_stall_stop_parks_but_keeps_slot_until_confirmed(tmp_path: P
 
 
 def test_unknown_service_state_parks_but_keeps_unit_and_target(board: Board) -> None:
-    job_id = board.add(target="shared")
-    other = board.add(target="shared")
+    job_id = board.add(target="shared", review="source")
+    other = board.add(target="shared", review="source")
     board.scan()
     unit = board.get(job_id).unit
     board.service.states[unit] = "unknown"
@@ -444,8 +444,8 @@ def test_reboot_with_unconfirmed_old_group_does_not_resume(board: Board) -> None
 
 
 def test_exhausted_recoveries_never_free_a_live_unit(board: Board) -> None:
-    job_id = board.add(target="shared")
-    other = board.add(target="shared")
+    job_id = board.add(target="shared", review="source")
+    other = board.add(target="shared", review="source")
     board.scan()
     board.set(job_id, recoveries=MAX_RECOVERIES)
     board.service.states[board.get(job_id).unit] = "active"
