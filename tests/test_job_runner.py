@@ -26,6 +26,7 @@ GOOD_FILES = {
     "PROGRESS.md": "done\n",
     "checklist.json": '{"items": [{"id": "a", "passes": true}]}',
 }
+RECORDS = {"PROGRESS.md", "checklist.json"}
 CHECK = [
     sys.executable,
     "-c",
@@ -106,10 +107,12 @@ class Env:
         return run_job(self.jobs, self.config, self.job.id, self.attempt)
 
     def seed(self, files: dict) -> None:
+        """Result files go to the workspace; the job records to the job folder."""
         work = self.folder() / "work"
         work.mkdir(parents=True, exist_ok=True)
         for name, text in files.items():
-            (work / name).write_text(text, encoding="utf-8")
+            base = self.folder() if name in RECORDS else work
+            (base / name).write_text(text, encoding="utf-8")
 
     def log(self) -> list[dict]:
         return [json.loads(x) for x in (self.state / "log.jsonl").read_text().splitlines()]
@@ -129,7 +132,9 @@ def env(tmp_path, monkeypatch):
 
 
 def work_turn(**extra) -> dict:
-    return {"writes": GOOD_FILES, **extra}
+    # The workspace and the job folder are siblings of the records, so `..` reaches them.
+    writes = {("../" + k if k in RECORDS else k): v for k, v in GOOD_FILES.items()}
+    return {"writes": writes, **extra}
 
 
 # --- protocol -------------------------------------------------------------------------------
@@ -376,7 +381,7 @@ def test_review_pass_needs_its_evidence_to_still_hold(env, case):
     if case == "log":
         Path(job.checks[-1]["log"]).write_text("MODEL CLAIM: PASS\n", encoding="utf-8")
     elif case == "checklist":
-        (env.folder() / "work" / "checklist.json").unlink()
+        (env.folder() / "checklist.json").unlink()
     else:
         writes[job.inputs["review"][0]] = "CHANGED REVIEW CRITERIA"
     env.scenario([{"reply": PASS, "writes": writes}])
@@ -423,7 +428,7 @@ def test_check_judges_files_after_the_command_and_kills_strays(tmp_path, monkeyp
     stray = env.folder() / "work" / "stray.txt"
     script = (
         "import os, subprocess, sys\n"
-        "os.remove('checklist.json')\n"
+        f"os.remove({str(env.folder() / 'checklist.json')!r})\n"
         "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1.5);"
         ' open("stray.txt", "w").write("x")\'])\n'
     )

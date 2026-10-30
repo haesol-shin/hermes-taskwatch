@@ -14,11 +14,12 @@ import pytest
 from taskwatch import job_delivery
 from taskwatch.fingerprint import files_fingerprint
 from taskwatch.job_cli import main as cli_main
+from taskwatch.job_env import job_environment
 from taskwatch.job_runner import _basis, _fingerprint
 from taskwatch.job_scan import scan_jobs
 from taskwatch.jobs import Jobs, JobState, load_job_config
 from tests.git_fixture import make_repo
-from tests.test_job_runner import GIT, GOOD_FILES, PASS, Env
+from tests.test_job_runner import GIT, PASS, Env, work_turn
 from tests.test_job_scan import Board
 
 SENDER = r"""
@@ -152,7 +153,7 @@ def finished_job(board: Board, **changes: object) -> JobState:
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("all green", encoding="utf-8")
     job = replace(board.get(job_id), workspace=str(workspace))
-    fingerprint = _fingerprint(job, workspace)
+    fingerprint = _fingerprint(job, workspace, job_environment({}))
     basis = _basis(job, folder)
     board.set(
         job_id,
@@ -491,7 +492,10 @@ def test_git_ignored_output_is_checked_at_delivery(
         [*GIT, "commit", "-m", "work"],
     ]
     env.scenario(
-        [{"writes": {**GOOD_FILES, ".gitignore": "out.txt\n"}, "run": commit}, {"reply": PASS}]
+        [
+            {"writes": {**work_turn()["writes"], ".gitignore": "out.txt\n"}, "run": commit},
+            {"reply": PASS},
+        ]
     )
     assert env.run("work") == 0
     assert env.run("check") == 0

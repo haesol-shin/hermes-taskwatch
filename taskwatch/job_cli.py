@@ -153,6 +153,7 @@ def _init(root: Path, unit_dir: Path | None) -> dict:
     config = directory / "jobs-config.json"
     data = {"version": 1, **asdict(JobConfig())}
     data.pop("review_command")
+    data.pop("env")
     if not config.exists():
         _create_new(config, (json.dumps(data, indent=2) + "\n").encode(), 0o600)
     load_job_config(root)

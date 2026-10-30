@@ -175,6 +175,29 @@ reads the agent definition and those guidelines when the review starts:
                    "--guidelines", "{guidelines}", "--review", "{review}"]
 ```
 
+### Job environment
+
+Optionally add `"env"`, an object of string keys and string values, to set the environment of
+every process the runner starts for a job: the omp worker (work, fix, review, including the
+reviewer command), the check command, and the git commands the runner runs. A systemd job
+starts with a minimal `PATH`, so tools such as `gitleaks` in `~/.local/bin` or `omp` plugins in
+`~/.bun/bin` are missing for a commit hook until you add them here. Values are used as written,
+except in `PATH`, where `~` and `$HOME` expand and `$PATH` stands for the inherited value. No
+shell runs. Anything that is not an object of strings is a config error; omitting `env` or
+leaving it empty keeps the inherited environment. The `init` draft omits this key.
+
+```json
+"env": {"PATH": "~/.local/bin:~/.bun/bin:$PATH"}
+```
+
+### Job records
+
+A job keeps its checklist and progress files in its job folder (`state/jobs/<id>/`), next to
+the logs and reviews, not in the workspace. The worker prompt and `WORKFLOW.md` give their
+absolute paths. The records are therefore never part of a result, and the clean-tree check of a
+`code` job needs no exception. A job submitted earlier whose paths name `.taskwatch/...` still
+loads; those paths now resolve inside the job folder as well.
+
 ### Submit an approved job
 
 Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
@@ -207,8 +230,8 @@ Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
 `design`, or `source` (a document that cites sources, such as research notes, summaries,
 or comparisons). Only `code` also runs the work in a Git worktree, because a code review
 reads the Git diff.
-Outputs, checklist, and progress paths are relative to the job workspace and
-cannot traverse outside it. `check_command` runs as argv without an implicit
+Output paths are relative to the job workspace, checklist and progress paths to the job
+folder; none can traverse outside its base. `check_command` runs as argv without an implicit
 shell; name a shell explicitly only when the approved check needs one.
 The work must create that check script if it is not already in its workspace.
 The checklist follows the existing nonempty `items` list of boolean `passes`.
