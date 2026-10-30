@@ -5,6 +5,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 ## [Unreleased]
 
 ### Added
+- `taskwatch watch <job>` blocks until a job reaches `approval_wait`, `user_wait`, `deliver_pending`, `done`, or `cancelled`, prints a short report, and exits (0 attention, 3 time limit, 2 unknown job). It reads `jobs.jsonl` without a lock or write and parses only new lines per poll, so a Hermes background process can wake the room that started the work.
 - Optional `review_command` selects a separate executor command for independent job reviews, falling back to `omp_command` when omitted.
 - Review-only jobs: submit a `review_target` (files or a commit) to review it without a work stage; the parsed verdict is recorded and delivered.
 - `python -m taskwatch.reviewer_launch` builds the omp reviewer command at run time from an omp agent definition and the `docs/review` guidelines, so a review started by taskwatch or by omp alone reads the same guideline text; `review_command` accepts `{guidelines}` and `{kind}`.

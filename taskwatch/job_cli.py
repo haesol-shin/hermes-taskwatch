@@ -26,6 +26,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--attempt", type=int, required=True)
     show = commands.add_parser("show")
     show.add_argument("job", nargs="?")
+    watch = commands.add_parser("watch", help="Block until a job needs attention, then report")
+    watch.add_argument("job")
+    watch.add_argument("--timeout", type=_seconds(1), default=82800, help="Seconds (default 82800)")
+    watch.add_argument("--interval", type=_seconds(5), default=30, help="Poll seconds (min 5)")
     for name in ("cancel", "wait", "approve", "resume"):
         action = commands.add_parser(name)
         action.add_argument("job")
@@ -35,11 +39,23 @@ def parser() -> argparse.ArgumentParser:
     return cli
 
 
+def _seconds(minimum: int):
+    def parse(text: str) -> int:
+        value = int(text)
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"must be at least {minimum}")
+        return value
+
+    return parse
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = (
         args.root or Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     ).resolve()
+    if args.command == "watch":
+        return _watch(args, root)
     try:
         result = _dispatch(args, root)
     except (ValueError, OSError, RecordError, KeyError) as exc:
@@ -48,6 +64,18 @@ def main(argv: list[str] | None = None) -> int:
     if result is not None:
         print(json.dumps(result, sort_keys=True))
     return 0
+
+
+def _watch(args: argparse.Namespace, root: Path) -> int:
+    from .job_watch import watch
+
+    try:
+        code, report = watch(root, args.job, timeout=args.timeout, interval=args.interval)
+    except (ValueError, OSError, RecordError) as exc:
+        print(f"taskwatch: {exc}", file=sys.stderr)
+        return 1
+    print(report, file=sys.stderr if code == 2 else sys.stdout)
+    return code
 
 
 def _dispatch(args: argparse.Namespace, root: Path):
