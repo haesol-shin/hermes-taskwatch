@@ -1,6 +1,7 @@
 """One review for code and public text: fingerprints, stale text, the snapshot, `taskwatch text`."""
 
 import os
+import shutil
 import stat
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from taskwatch.fingerprint import text_fingerprint
 from taskwatch.job_cli import main
 from taskwatch.job_delivery import _message
 from taskwatch.job_env import job_environment
+from taskwatch.job_runner import run_job
 from tests.git_fixture import git
 from tests.test_public_text import UnitEnv
 from tests.verdicts import CODE_PASS
@@ -290,3 +292,20 @@ def test_a_code_review_without_a_design_check_is_not_accepted(unit_env):
     assert unit_env.run("review") == 0
     record = unit_env.get().reviews[-1]
     assert not record["ok"] and any("design_check" in p for p in record["problems"])
+
+
+def test_text_works_after_the_work_folder_was_removed(unit_env, tmp_path):
+    reviewed(unit_env)
+    shutil.rmtree(unit_env.tree)
+    assert text_command(unit_env, tmp_path) == 0
+    assert (tmp_path / "out" / "title.txt").read_text() == "feat(x): add\n"
+    unit_env.write_text("body.md", "edited later\n")
+    assert text_command(unit_env, tmp_path) == 2
+
+
+def test_no_text_change_means_no_only_text_changed_claim(unit_env):
+    reviewed(unit_env, turns=2)
+    unit_env.put("review")
+    assert run_job(unit_env.jobs, unit_env.config, unit_env.job.id, unit_env.attempt) == 0
+    prompt = unit_env.prompts()[-1]
+    assert "only text changed" not in prompt and "Text changed since" not in prompt

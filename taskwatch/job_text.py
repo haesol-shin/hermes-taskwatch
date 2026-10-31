@@ -184,11 +184,16 @@ def reviewed_copy(
     snapshot = Path(record.get("snapshot", ""))
     if not snapshot.is_dir() or snapshot_digest(snapshot) != record.get("snapshot_sha256"):
         return EXIT_CHANGED, ["snapshot changed since the review"]
-    current = collect(job, Path(job.workspace), folder, env)
-    if (
-        unit_id not in current
-        or current[unit_id].state()["fingerprint"] != (texts[unit_id]["fingerprint"])
-    ):
+    # The work folder may be gone after delivery, so the commit messages come from the
+    # snapshot, whose hash was just checked. Only the title and body are read live.
+    messages = [
+        p.read_text(encoding="utf-8")
+        for p in sorted((snapshot / unit_id / "commits").glob("*.txt"))
+    ]
+    title, body_now = (
+        unit_file(folder, unit_id, name).read_text(encoding="utf-8") for name in UNIT_FILES
+    )
+    if text_fingerprint(title, body_now, messages) != texts[unit_id]["fingerprint"]:
         return EXIT_CHANGED, ["text changed since review"]
     state = texts[unit_id]
     evidence = (

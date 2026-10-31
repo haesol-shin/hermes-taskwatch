@@ -420,11 +420,13 @@ def _text_since(ctx: Ctx, last: Mapping, review_root: Path) -> list[str]:
     old = last.get("texts", {})
     same_tree = all(job.texts.get(u, {}).get("tree") == s.get("tree") for u, s in old.items())
     lines = []
-    if same_tree and old:
-        lines.append("The tree is identical to the reviewed tree; only text changed.")
-    previous = Path(last.get("snapshot", ""))
-    diff = job_text.snapshot_diff(previous, review_root / job_text.SNAPSHOT) if previous else ""
+    snapshot = last.get("snapshot")
+    diff = (
+        job_text.snapshot_diff(Path(snapshot), review_root / job_text.SNAPSHOT) if snapshot else ""
+    )
     if diff:
+        if same_tree and old:
+            lines.append("The tree is identical to the reviewed tree; only text changed.")
         lines += ["Text changed since the last review (reviewed to current):", diff]
     return lines
 
