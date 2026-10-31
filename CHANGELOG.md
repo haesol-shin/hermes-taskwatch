@@ -5,6 +5,7 @@ All notable changes to hermes-taskwatch are documented here. The format is based
 ## [Unreleased]
 
 ### Added
+- Code jobs accept an optional `public_text` list of pull request units. The check fails a unit whose commit message has a subject that is not `type(scope): summary` or `type: summary`, a subject or line over 72 characters, no blank line after the subject, or a trailer line, and fails a missing `pr/<id>/title.txt` or `pr/<id>/body.md` in the job folder.
 - Code jobs start from a freshly fetched `origin/<default branch>` on a named branch (`<branch_prefix><id8>`, default `taskwatch/`), record `base`, `base_note`, `branch`, `workspace_state` and `branch_state`, and accept an optional `base` field for stacked work. The scan removes a clean worktree at `done` and `cancelled`, keeps a dirty one with the reason, and deletes the branch only once it is merged or squash merged into `origin/<default branch>`.
 - Optional `env` object in `jobs-config.json` sets the environment of every process a job starts (omp worker, reviewer, check command, runner git commands); `PATH` entries expand `~`, `$HOME` and `$PATH`, so jobs find tools in `~/.local/bin` without per-job approval.
 - A job keeps its checklist and progress files in its job folder instead of the worktree, and the worker prompt gives their absolute paths, so records are never committed into a result and the clean-tree check needs no exception. Records that name `.taskwatch/...` still load.

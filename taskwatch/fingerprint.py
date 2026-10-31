@@ -50,6 +50,27 @@ def head_sha(repo: Path, env: Mapping[str, str] | None = None) -> str:
     return git_fingerprint(_git_ok(repo, ["rev-parse", "HEAD"], env=env).decode("utf-8").strip())
 
 
+def resolve_commit(repo: Path, ref: str, env: Mapping[str, str] | None = None) -> str:
+    """The full sha a ref names, or a FingerprintError."""
+    out = _git_ok(repo, ["rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"], env=env)
+    return git_fingerprint(out.decode("utf-8").strip())
+
+
+def range_messages(
+    repo: Path, base: str, head: str, env: Mapping[str, str] | None = None
+) -> list[tuple[str, str]]:
+    """(sha, message) of each commit of `base..head`, oldest first."""
+    out = _git_ok(
+        repo, ["log", "--reverse", "--format=%H%n%B%x00", f"{base}..{head}", "--"], env=env
+    ).decode("utf-8", "replace")
+    rows = []
+    for chunk in out.split("\0"):
+        sha, _, message = chunk.lstrip("\n").partition("\n")
+        if sha:
+            rows.append((sha, message.rstrip("\n")))
+    return rows
+
+
 def files_fingerprint(root: Path, relative_paths: Sequence[str]) -> str:
     return _list_hash(_file_rows(root, relative_paths))
 

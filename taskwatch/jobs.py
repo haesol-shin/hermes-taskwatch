@@ -111,6 +111,9 @@ class JobState:
     branch: str = ""
     workspace_state: str = ""
     branch_state: str = ""
+    # Code jobs. Pull request units whose commit messages, title and body the runner checks:
+    # [{"id", "base", "head"}]. Their text files live in the job folder under pr/<id>/.
+    public_text: tuple[Mapping, ...] = ()
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -296,7 +299,16 @@ _COMMON_FIELDS = {
     "spec",
 }
 _WORK_FIELDS = {"outputs", "check_command", "checklist", "progress"}
-_OPTIONAL_FIELDS = {"inputs", "predecessors", "expected_wait_seconds", "approval_required", "base"}
+_OPTIONAL_FIELDS = {
+    "inputs",
+    "predecessors",
+    "expected_wait_seconds",
+    "approval_required",
+    "base",
+    "public_text",
+}
+UNIT_FILES = ("title.txt", "body.md")
+_UNIT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
 
 def _submission(payload: dict) -> dict:
@@ -324,6 +336,8 @@ def _submission(payload: dict) -> dict:
         _work_fields(data)
     if "base" in data:
         _base_field(data, review_only)
+    if "public_text" in data:
+        _public_text_field(data, review_only)
     data.setdefault("predecessors", [])
     _strings(data["predecessors"], "predecessors")
     data.setdefault("expected_wait_seconds", 0)
@@ -347,6 +361,47 @@ def _base_field(data: dict, review_only: bool) -> None:
         raise ValueError("base must be a commit or branch name")
     if data["review"] != "code" or review_only:
         raise ValueError("base applies only to code jobs that build a result")
+
+
+def _ref(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value.startswith("-")
+        or any(ch.isspace() or ord(ch) < 32 for ch in value)
+    ):
+        raise ValueError(f"{label} must be a commit or branch name")
+    return value
+
+
+def _public_text_field(data: dict, review_only: bool) -> None:
+    """Normalize the pull request units; a stacked unit's base may be another unit's head."""
+    units = data["public_text"]
+    if data["review"] != "code" or review_only:
+        raise ValueError("public_text applies only to code jobs that build a result")
+    if not isinstance(units, list) or not units:
+        raise ValueError("public_text must be a nonempty list of units")
+    normal = []
+    for unit in units:
+        if not isinstance(unit, dict) or unit.keys() - {"id", "base", "head"} or "base" not in unit:
+            raise ValueError("a public_text unit needs id and base, and may have head")
+        if not isinstance(unit.get("id"), str) or _UNIT_ID.fullmatch(unit["id"]) is None:
+            raise ValueError("a public_text id is lowercase letters, digits and hyphens")
+        normal.append(
+            {
+                "id": unit["id"],
+                "base": _ref(unit["base"], "public_text base"),
+                "head": _ref(unit.get("head", "HEAD"), "public_text head"),
+            }
+        )
+    if len({unit["id"] for unit in normal}) != len(normal):
+        raise ValueError("public_text ids must be unique")
+    # A head may name a commit the job has not made yet, so only a base is resolved now.
+    heads = {unit["head"] for unit in normal}
+    for unit in normal:
+        if unit["base"] not in heads:
+            _resolve_commit(Path(data["target"]), unit["base"], "public_text base")
+    data["public_text"] = normal
 
 
 def _work_fields(data: dict) -> None:
@@ -378,9 +433,9 @@ def _review_fields(data: dict) -> None:
     data.update(check_command=[], checklist="", progress="", resume_stage="review")
 
 
-def _resolve_commit(root: Path, revision: object) -> str:
+def _resolve_commit(root: Path, revision: object, label: str = "review_target commit") -> str:
     if not isinstance(revision, str) or not revision.strip() or revision.startswith("-"):
-        raise ValueError("review_target commit must be a revision")
+        raise ValueError(f"{label} must be a revision")
     proc = subprocess.run(
         [
             "git",
@@ -397,7 +452,7 @@ def _resolve_commit(root: Path, revision: object) -> str:
     )
     sha = proc.stdout.strip()
     if proc.returncode != 0 or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
-        raise ValueError(f"review_target commit is not a commit of the target: {revision}")
+        raise ValueError(f"{label} is not a commit of the target: {revision}")
     return sha
 
 
@@ -451,6 +506,18 @@ def _validate_record(job: dict) -> None:
             for row in attempts
         ):
             raise RecordError(f"jobs.jsonl: invalid {key} attempts")
+    _validate_public_text(job)
+
+
+def _validate_public_text(job: dict) -> None:
+    units = job.get("public_text", [])
+    if not isinstance(units, list) or any(
+        not isinstance(unit, dict)
+        or unit.keys() != {"id", "base", "head"}
+        or any(not isinstance(value, str) or not value for value in unit.values())
+        for unit in units
+    ):
+        raise RecordError("jobs.jsonl: invalid public_text")
 
 
 def _validate_review_target(job: dict) -> None:
