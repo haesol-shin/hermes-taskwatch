@@ -53,6 +53,19 @@ def test_text_fingerprint_follows_title_body_and_commit_messages():
     assert text_fingerprint("feat: a", "body", ["feat: a\n\nwhy", "fix: z"]) != base
 
 
+def test_snapshot_messages_keep_commit_order_past_99_commits(tmp_path):
+    messages = [f"feat: change {n}" for n in range(1, 111)]
+    unit = job_text.UnitText(
+        id="u", base="b", head="h", tree="t", title="t", body="b", messages=tuple(messages)
+    )
+    for name, text in job_text._files({"u": unit}).items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    got = job_text.snapshot_messages(tmp_path / "u")
+    assert [m.rstrip("\n") for m in got] == messages
+
+
 def test_the_evidence_line_is_not_part_of_the_fingerprint():
     plain = text_fingerprint("t", "body\n", ["m"])
     line = "Review evidence: round 1 PASS, code abc1234, text 12345678"
