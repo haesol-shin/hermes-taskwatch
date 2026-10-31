@@ -46,6 +46,18 @@ Use this file with the common guidelines when the deliverable is a code change.
 
 **K-11.** If the assignment includes test or CI output, a failure caused by the change is a finding. In the verdict, say which tests and commands you ran, or that tests were not checked.
 
+## Public text
+
+Use these rules when the assignment names public text: the commit messages, title and body of one or more pull request units.
+
+**K-15.** Check every statement in a unit's commit messages, title and body about the change against that unit's diff, not against the whole branch. A result the text reports as produced by the unit, such as a test count or a manual run, must hold at the unit's head, or the text must say what ran instead. A statement the unit's diff does not support is `evidence`: P1 when a reader would decide on it, P2 otherwise.
+
+**K-16.** A statement about what is not in the diff, a draft, or history is a finding, unless the change needs it for a merge decision.
+
+**K-17.** The runner checks the commit subject shape and length, the blank line after it, line length and trailers before the review. Do not judge them. Every other text rule of the repository stays with you, as part of the repository conventions rule of the common guidelines.
+
+**K-18.** The body states the known limits of the change, and a missing limit is P2. It carries the evidence the repository's contributing rules ask for, and missing evidence is P3.
+
 ## Re-review
 
 **K-12.** On a later round, review the change since the prior reviewed result and the resolution of prior findings. Read surrounding code as needed. Do not re-litigate ground a prior round accepted.

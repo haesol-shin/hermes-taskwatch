@@ -114,6 +114,8 @@ class JobState:
     # Code jobs. Pull request units whose commit messages, title and body the runner checks:
     # [{"id", "base", "head"}]. Their text files live in the job folder under pr/<id>/.
     public_text: tuple[Mapping, ...] = ()
+    # Per unit: the shas of base, head and tree and the text fingerprint the last check saw.
+    texts: Mapping[str, Mapping] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -511,6 +513,8 @@ def _validate_record(job: dict) -> None:
 
 def _validate_public_text(job: dict) -> None:
     units = job.get("public_text", [])
+    if not isinstance(job.get("texts", {}), dict):
+        raise RecordError("jobs.jsonl: invalid texts")
     if not isinstance(units, list) or any(
         not isinstance(unit, dict)
         or unit.keys() != {"id", "base", "head"}

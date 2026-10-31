@@ -20,10 +20,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import job_workspace
+from . import job_findings, job_text, job_workspace
 from .checks import checklist_problems, message_problems
 from .evidence import basis_of
-from .executor import _verdict_line
+from .executor import _finding_lines, _verdict_line
 from .fingerprint import (
     FingerprintError,
     _git_ok,
@@ -396,7 +396,62 @@ def _subject_lines(ctx: Ctx) -> list[str]:
     return [f"Review target: {what}", f"Target fingerprint: {job.fingerprint}"]
 
 
-def _prior_lines(job: JobState, prior: list[Mapping]) -> list[str]:
+def _text_lines(job: JobState, review_root: Path) -> list[str]:
+    """Where the reviewed public text is, and which commits each unit covers."""
+    if not job.public_text:
+        return []
+    lines = [f"Public text snapshot (read only): {review_root / job_text.SNAPSHOT}"]
+    for unit in job.public_text:
+        state = job.texts.get(unit["id"], {})
+        base, head = state.get("base", unit["base"]), state.get("head", unit["head"])
+        lines.append(
+            f"Unit {unit['id']}: title, body and commit messages are under "
+            f"{review_root / job_text.SNAPSHOT / unit['id']}; "
+            f"judge each claim against `git diff {base} {head}` and `git log {base}..{head}`."
+        )
+    return lines
+
+
+def _text_since(ctx: Ctx, last: Mapping, review_root: Path) -> list[str]:
+    """What changed in the public text since the last review, and whether only text did."""
+    job = ctx.job
+    if not job.public_text:
+        return []
+    old = last.get("texts", {})
+    same_tree = all(job.texts.get(u, {}).get("tree") == s.get("tree") for u, s in old.items())
+    lines = []
+    if same_tree and old:
+        lines.append("The tree is identical to the reviewed tree; only text changed.")
+    previous = Path(last.get("snapshot", ""))
+    diff = job_text.snapshot_diff(previous, review_root / job_text.SNAPSHOT) if previous else ""
+    if diff:
+        lines += ["Text changed since the last review (reviewed to current):", diff]
+    return lines
+
+
+def _finding_notes(ctx: Ctx, last: Mapping) -> list[str]:
+    """The worker's record of the last findings, and the root-cause notes of repeated rules."""
+    job = ctx.job
+    lines = []
+    status = job_findings.status_lines(job, ctx.folder)
+    if status:
+        lines += ["Worker record of the last findings; accept or reject each not_fixed reason:"]
+        lines += status
+    sections = job_findings.notes(ctx.folder)
+    for rule in sorted({f["rule"] for f in last.get("findings", [])} & sections.keys()):
+        note = "; ".join(f"{label} {text}" for label, text in sections[rule].items())
+        lines.append(f"Root-cause note for {rule}: {note}")
+    recurred = job.checks[-1].get("recurred", {}) if job.checks else {}
+    for rule, prevention in recurred.items():
+        lines.append(
+            f"Rule {rule} repeated after a note named this prevention: {prevention}. "
+            "Answer whether it was applied."
+        )
+    return lines
+
+
+def _prior_lines(ctx: Ctx, prior: list[Mapping], review_root: Path) -> list[str]:
+    job = ctx.job
     last = prior[-1]
     if job.review_target is not None:
         # Nothing was fixed between rounds: the last answer could not be accepted.
@@ -413,9 +468,11 @@ def _prior_lines(job: JobState, prior: list[Mapping]) -> list[str]:
         f"Previously reviewed fingerprint: {last['fingerprint']}",
         f"Current fingerprint: {job.fingerprint}",
     ]
-    if job.review == "code":
+    text = _text_since(ctx, last, review_root)
+    if job.review == "code" and not any(line.startswith("The tree is identical") for line in text):
         lines.append(f"See: git diff {last['fingerprint']} {job.fingerprint}")
-    return [*lines, "Findings of the last review:", last["body"]]
+    lines += text
+    return [*lines, *_finding_notes(ctx, last), "Findings of the last review:", last["body"]]
 
 
 def _review_message(
@@ -430,13 +487,14 @@ def _review_message(
         f"Intent: {job.intent}",
         f"Spec: {job.spec}",
         *_subject_lines(ctx),
+        *_text_lines(job, review_root),
         "If you delegate to subagents, wait until each one finished.",
         "",
         "Original request, in full:",
         job.prompt,
     ]
     if prior:
-        lines += _prior_lines(job, prior)
+        lines += _prior_lines(ctx, prior, review_root)
     lines += [f"Review input: {p}" for p in job.inputs.get("review", [])]
     lines += ["", _layer("taskwatch.md")]
     if resumed:
@@ -597,10 +655,6 @@ def _basis(job: JobState, folder: Path) -> str:
     return basis_of(Path(job.intent), Path(job.spec), _guidelines(job, folder))
 
 
-def _unit_file(folder: Path, unit_id: str, name: str) -> Path:
-    return folder / "pr" / unit_id / name
-
-
 def _text_problems(job: JobState, workspace: Path, env: Mapping[str, str]) -> list[str]:
     """The common commit message rules for each unit's commits; refs resolve at every check."""
     problems = []
@@ -639,7 +693,7 @@ def _file_problems(job: JobState, workspace: Path, folder: Path) -> list[str]:
         problems.append(f"checklist items do not pass: {', '.join(failing)}")
     for unit in job.public_text:
         for name in UNIT_FILES:
-            if not _unit_file(folder, unit["id"], name).is_file():
+            if not job_text.unit_file(folder, unit["id"], name).is_file():
                 problems.append(f"required file is missing: pr/{unit['id']}/{name}")
     return problems
 
@@ -686,6 +740,37 @@ def _file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _public_texts(ctx: Ctx, problems: list[str]) -> dict[str, dict]:
+    """The state of each unit's text; a failure is a problem if no earlier one says so."""
+    if not ctx.job.public_text:
+        return {}
+    try:
+        return job_text.states(job_text.collect(ctx.job, ctx.workspace, ctx.folder, ctx.env))
+    except (ValueError, OSError) as exc:
+        if not problems:
+            problems.append(f"the public text cannot be read: {exc}")
+        return {}
+
+
+def _finding_problems(ctx: Ctx, fingerprint: str, texts: dict) -> tuple[list[str], dict]:
+    """After a review that did not pass: the worker's record of each finding, and repeats."""
+    job = ctx.job
+    review = job.reviews[-1] if job.reviews else None
+    if job.review_target is not None or not review or review["ok"] or not review.get("findings"):
+        return [], {}
+    problems = job_findings.worker_problems(ctx.folder, review, fingerprint, texts)
+    rows = ctx.jobs.state.read_records(job_findings.INDEX)
+    repeated = job_findings.repeated_rules(job, job.reviews[:-1], review, rows)
+    problems += job_findings.note_problems(ctx.folder, repeated)
+    # The note a rule had before this review was written; the rule broke it again.
+    before = [c for c in job.checks if c["seq"] < review["seq"]]
+    earlier = before[-1].get("noted", {}) if before else {}
+    return problems, {
+        "noted": job_findings.named_preventions(ctx.folder, repeated),
+        "recurred": {rule: earlier[rule] for rule in repeated if rule in earlier},
+    }
+
+
 def _check_step(ctx: Ctx) -> int:
     job = ctx.job
     seq = len(job.checks) + len(job.reviews) + 1
@@ -693,12 +778,15 @@ def _check_step(ctx: Ctx) -> int:
     # After the command: it may have changed or removed what the checks require.
     problems += _file_problems(job, ctx.workspace, ctx.folder)
     problems += _text_problems(job, ctx.workspace, ctx.env)
+    texts = _public_texts(ctx, problems)
     fingerprint = basis = ""
     try:
         fingerprint = _fingerprint(job, ctx.workspace, ctx.env)
         basis = _basis(job, ctx.folder)
     except (ValueError, OSError) as exc:
         problems.append(str(exc))
+    found, notes = _finding_problems(ctx, fingerprint, texts)
+    problems += found
     record = {
         "seq": seq,
         "at": _now(),
@@ -707,6 +795,8 @@ def _check_step(ctx: Ctx) -> int:
         "problems": problems,
         "fingerprint": fingerprint,
         "basis": basis,
+        "texts": texts,
+        **notes,
     }
 
     def build(current: dict) -> dict:
@@ -714,6 +804,7 @@ def _check_step(ctx: Ctx) -> int:
             "checks": [*current.checks, record],
             "fingerprint": fingerprint,
             "basis": basis,
+            "texts": texts,
             "events": _event(current, type="check", ok=not problems),
             **_progress_changes(current, ctx, _now()),
         }
@@ -768,9 +859,24 @@ def _result_stale(ctx: Ctx) -> bool:
     job = ctx.job
     try:
         changed = _fingerprint(job, ctx.workspace, ctx.env) != job.fingerprint
-        return changed or _basis(job, ctx.folder) != job.basis or not job.fingerprint
+        if changed or _basis(job, ctx.folder) != job.basis or not job.fingerprint:
+            return True
+        return job_text.texts_changed(job, ctx.workspace, ctx.folder, ctx.env, job.texts)
     except (ValueError, OSError):
         return True
+
+
+def _snapshot(ctx: Ctx, review_root: Path) -> dict:
+    """Freeze the text the reviewer reads, so the review and the published copy agree."""
+    if not ctx.job.public_text:
+        return {}
+    units = job_text.collect(ctx.job, ctx.workspace, ctx.folder, ctx.env)
+    root = review_root / job_text.SNAPSHOT
+    return {
+        "texts": job_text.states(units),
+        "snapshot": str(root),
+        "snapshot_sha256": job_text.write_snapshot(root, units),
+    }
 
 
 def _review_step(ctx: Ctx) -> int:
@@ -784,6 +890,7 @@ def _review_step(ctx: Ctx) -> int:
     name = f"review-{len(job.reviews)}-{len(job.checks)}"
     review_root = ctx.folder / "reviews" / name
     review_root.mkdir(parents=True, exist_ok=True)
+    snapshot = _snapshot(ctx, review_root)
     text = _converse(
         ctx,
         ctx.folder / "sessions" / name,
@@ -794,17 +901,18 @@ def _review_step(ctx: Ctx) -> int:
         ctx.jobs.verify_inputs(job)
     except (ValueError, OSError) as exc:
         raise InputsChanged(f"a copied input changed during the review: {exc}") from exc
-    problems = _evidence_problems(ctx)
+    problems = _evidence_problems(ctx, snapshot)
     if problems:
         # The reviewer saw evidence that no longer holds, so its verdict is not accepted.
         _apply(ctx, lambda j: {**_requeue(j), "error": "; ".join(problems)})
         return 0
-    record = _judge(ctx, text)
+    record = _judge(ctx, text, snapshot)
     _apply(ctx, lambda j: _review_route(j, record))
+    job_findings.sync_index(ctx.jobs.state, ctx.jobs.load()[job.id], ctx.folder, _now())
     return 0
 
 
-def _evidence_problems(ctx: Ctx) -> list[str]:
+def _evidence_problems(ctx: Ctx, snapshot: Mapping) -> list[str]:
     """Recheck what the accepted check rested on; a PASS must not outlive it."""
     job = ctx.job
     if job.review_target is not None:
@@ -823,6 +931,14 @@ def _evidence_problems(ctx: Ctx) -> list[str]:
             return ["the check log does not match its recorded hash"]
     except OSError as exc:
         return [f"the check log is unreadable: {exc}"]
+    try:
+        if snapshot and (
+            snapshot["texts"] != job.texts
+            or job_text.texts_changed(job, ctx.workspace, ctx.folder, ctx.env, snapshot["texts"])
+        ):
+            return ["the public text changed since the check"]
+    except (ValueError, OSError) as exc:
+        return [f"the public text cannot be read: {exc}"]
     return _file_problems(job, ctx.workspace, ctx.folder)
 
 
@@ -834,6 +950,7 @@ def _requeue(job: JobState) -> dict:
         "resume_stage": first,
         "fingerprint": "",
         "basis": "",
+        "texts": {},
         "ended_at": _now(),
         "events": _event(job, type="review_stale"),
     }
@@ -842,7 +959,7 @@ def _requeue(job: JobState) -> dict:
     return {**changes, "recoveries": job.recoveries + 1}
 
 
-def _judge(ctx: Ctx, body: str) -> dict:
+def _judge(ctx: Ctx, body: str, snapshot: Mapping) -> dict:
     job = ctx.job
     seq = len(job.checks) + len(job.reviews) + 1
     record = {
@@ -858,10 +975,13 @@ def _judge(ctx: Ctx, body: str) -> dict:
         "body": body,
         "session_path": ctx.jobs.load()[job.id].session_path,
         "problems": [],
+        "findings": [],
+        **snapshot,
     }
     try:
         verdict, blocking, reviewer = _verdict_line(body)
         record.update(verdict=verdict, blocking=blocking, reviewer=reviewer)
+        record["findings"] = _finding_lines(body, verdict)
     except ValueError as exc:
         record["problems"].append(str(exc))
     try:
