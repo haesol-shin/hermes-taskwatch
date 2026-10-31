@@ -84,7 +84,7 @@ P0 and P1 block. P2 and P3 do not. A rule break is P0 only when it is about runt
 - `portability`: the paths, layout, tools and accounts the change assumes about other users.
 - `choices`: the writer's choices that the owner did not ask for, including those the spec leaves unlisted.
 
-You may judge a writer's choice. You may not override an owner decision: when a quoted owner decision covers the choice, answer `ok` and state any concern as P3. When the decision rests on a premise you can show is false, report it as a P2 `premise` finding for the owner, not as a blocker. A writer's choice is P1 only when you show that it contradicts the intent, the approval scope or a verified fact; otherwise it is P2, and the fix is a spec revision.
+You may judge a writer's choice. You may not override an owner decision: when a quoted owner decision covers the choice, answer `ok` and state any concern as P3. When the decision rests on a premise you can show is false, report it as a P2 finding with the rule `premise` (category `evidence`) for the owner, not as a blocker. A writer's choice is P1 only when you show that it contradicts the intent, the approval scope or a verified fact; otherwise it is P2, and the fix is a spec revision.
 
 ## Sources
 

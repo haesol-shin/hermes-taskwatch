@@ -172,6 +172,15 @@ def _unit_id(job: JobState, wanted: str | None) -> str:
     return wanted
 
 
+def snapshot_messages(unit_dir: Path) -> list[str]:
+    """Commit messages of one snapshot unit in commit order.
+
+    The files are numbered 01, 02, ... 100; a string sort would put 100 before 11.
+    """
+    files = sorted((unit_dir / "commits").glob("*.txt"), key=lambda p: int(p.stem))
+    return [p.read_text(encoding="utf-8") for p in files]
+
+
 def reviewed_copy(
     job: JobState, env: Mapping[str, str], folder: Path, wanted: str | None, out: Path
 ) -> tuple[int, list[str]]:
@@ -184,11 +193,13 @@ def reviewed_copy(
     snapshot = Path(record.get("snapshot", ""))
     if not snapshot.is_dir() or snapshot_digest(snapshot) != record.get("snapshot_sha256"):
         return EXIT_CHANGED, ["snapshot changed since the review"]
-    current = collect(job, Path(job.workspace), folder, env)
-    if (
-        unit_id not in current
-        or current[unit_id].state()["fingerprint"] != (texts[unit_id]["fingerprint"])
-    ):
+    # The work folder may be gone after delivery, so the commit messages come from the
+    # snapshot, whose hash was just checked. Only the title and body are read live.
+    messages = snapshot_messages(snapshot / unit_id)
+    title, body_now = (
+        unit_file(folder, unit_id, name).read_text(encoding="utf-8") for name in UNIT_FILES
+    )
+    if text_fingerprint(title, body_now, messages) != texts[unit_id]["fingerprint"]:
         return EXIT_CHANGED, ["text changed since review"]
     state = texts[unit_id]
     evidence = (
