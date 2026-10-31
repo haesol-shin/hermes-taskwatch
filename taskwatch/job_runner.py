@@ -23,7 +23,7 @@ from pathlib import Path
 from . import job_findings, job_text, job_workspace
 from .checks import checklist_problems, message_problems
 from .evidence import basis_of
-from .executor import _finding_lines, _verdict_line
+from .executor import _design_check, _finding_lines, _verdict_line
 from .fingerprint import (
     FingerprintError,
     _git_ok,
@@ -486,6 +486,8 @@ def _review_message(
         f"Read these guidelines first: {', '.join(str(p) for p in guidelines)}",
         f"Intent: {job.intent}",
         f"Spec: {job.spec}",
+        f"Approval source: {job.approval_source}",
+        f"Approval scope: {job.approval_scope}",
         *_subject_lines(ctx),
         *_text_lines(job, review_root),
         "If you delegate to subagents, wait until each one finished.",
@@ -982,6 +984,8 @@ def _judge(ctx: Ctx, body: str, snapshot: Mapping) -> dict:
         verdict, blocking, reviewer = _verdict_line(body)
         record.update(verdict=verdict, blocking=blocking, reviewer=reviewer)
         record["findings"] = _finding_lines(body, verdict)
+        if job.review in {"code", "design"}:
+            record["design_check"] = _design_check(body, record["findings"])
     except ValueError as exc:
         record["problems"].append(str(exc))
     try:

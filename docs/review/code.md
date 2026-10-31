@@ -16,7 +16,7 @@ Use this file with the common guidelines when the deliverable is a code change.
 
 - Evidence: a code path, a rule, or a document line. No speculation.
 - Actionable: a discrete fix, not a request to consider improving something.
-- Unintentional: not a choice the change documents on purpose.
+- Not an owner decision. A choice the change documents on purpose is not reported unless it is a writer's choice under the design questions rule of the common guidelines.
 - Introduced here: not a pre-existing problem the change did not touch.
 - Proportionate: do not demand a rigor the rest of the codebase does not use.
 - No unstated assumption: nothing assumed about the codebase or the author's intent that the evidence does not show.
@@ -36,7 +36,7 @@ Use this file with the common guidelines when the deliverable is a code change.
 
 ## Failure modes
 
-**K-7.** Treat a factual claim the change relies on as a claim, not as a fact. If code, tests, or a cited record in the repository do not support it, report the unverified claim when the change depends on it.
+**K-7.** Treat a factual claim the change relies on as a claim, not as a fact. If code, tests, or a cited record in the repository do not support it, report the unverified claim when the change depends on it. A premise the change relies on, such as "today X fails", is verified by running or reading, not accepted from the spec; when the cause is absent, the finding is `evidence`.
 
 **K-8.** For a new type, variant, or value that crosses a function or module boundary, find the consuming dispatch point and confirm an explicit branch or an existing catch-all forwards it. A silent drop, no-op, or discard is a defect.
 
@@ -57,6 +57,10 @@ Use these rules when the assignment names public text: the commit messages, titl
 **K-17.** The runner checks the commit subject shape and length, the blank line after it, line length and trailers before the review. Do not judge them. Every other text rule of the repository stays with you, as part of the repository conventions rule of the common guidelines.
 
 **K-18.** The body states the known limits of the change, and a missing limit is P2. It carries the evidence the repository's contributing rules ask for, and missing evidence is P3.
+
+## Scope and write targets
+
+**K-19.** Compare what the change writes, deletes or changes outside the workspace with the approval scope the assignment names. A write the scope does not allow is an external action the assignment does not allow, which is P0.
 
 ## Re-review
 

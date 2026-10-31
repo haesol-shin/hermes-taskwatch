@@ -17,6 +17,7 @@ from taskwatch.job_rpc import FrameDecoder, RpcError
 from taskwatch.job_runner import run_job
 from taskwatch.jobs import JobConfig, Jobs, JobState
 from tests.git_fixture import make_repo
+from tests.spec_fixture import VALID_SPEC
 
 FAKE = Path(__file__).with_name("fake_omp.py")
 PASS = '{"verdict": "PASS", "blocking": false, "reviewer": "reviewer.invalid"}'
@@ -54,7 +55,7 @@ class Env:
         monkeypatch.setenv("FAKE_OMP_STATE", str(self.state))
         monkeypatch.setattr(job_runner, "SETTLE_POLL", 0.1)
         (tmp_path / "intent.md").write_text("intent text\n", encoding="utf-8")
-        (tmp_path / "spec.md").write_text("spec text\n", encoding="utf-8")
+        (tmp_path / "spec.md").write_text(VALID_SPEC, encoding="utf-8")
         (tmp_path / "w.txt").write_text("work only\n", encoding="utf-8")
         (tmp_path / "r.txt").write_text("review only\n", encoding="utf-8")
         if target is None:

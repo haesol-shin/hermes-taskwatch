@@ -8,7 +8,7 @@ Use this file with the common guidelines when the deliverable is a design: a pla
 
 **D-2.** Check that there is a way to tell whether the design worked, and that the method matches the purpose. A method that cannot fail, or that measures a different question, is a finding.
 
-**D-3.** If a simpler approach meets the same purpose, report it with evidence from the deliverable. When two approaches are equally valid, accept the author's choice. Taste is not a finding.
+**D-3.** If a simpler approach meets the same purpose, report it with evidence from the deliverable. When two approaches are equally valid, accept the author's choice only when an owner decision or a written reason covers it; otherwise the answer to `alternatives` decides. Taste is not a finding.
 
 **D-4.** Report a structure the purpose does not need. Do not ask for a design gate, a framework, or a process the assignment did not require.
 

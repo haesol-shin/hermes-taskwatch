@@ -312,6 +312,57 @@ _OPTIONAL_FIELDS = {
 UNIT_FILES = ("title.txt", "body.md")
 _UNIT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
+# The headings of docs/spec-template.md. A code or design job's spec answers each one, or says
+# `n/a: <reason>`; a source job and a review-only job have no design to question.
+SPEC_REVIEWS = frozenset({"code", "design"})
+SPEC_HEADINGS = (
+    "Purpose and cause",
+    "Options and common practice",
+    "Homes",
+    "Overlaps",
+    "Stable text",
+    "Needed now",
+    "Repeated judgments",
+    "Owner decisions and asks",
+    "Other users",
+    "Writer choices",
+    "Writes outside the workspace",
+    "Public text",
+)
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_HEADING_LINE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+
+def spec_sections(text: str) -> dict[str, str]:
+    """The `## ` sections of a spec, comments removed. A repeated heading keeps its first body."""
+    parts = _HEADING_LINE.split(_COMMENT.sub("", text))
+    sections: dict[str, str] = {}
+    for name, body in zip(parts[1::2], parts[2::2], strict=True):
+        sections.setdefault(name, body.strip())
+    return sections
+
+
+def spec_problems(text: str) -> list[str]:
+    sections = spec_sections(text)
+    problems = []
+    for name in SPEC_HEADINGS:
+        body = sections.get(name)
+        if body is None:
+            problems.append(f"missing heading: {name}")
+        elif not body:
+            problems.append(f"empty heading: {name}")
+        elif re.match(r"n/a(?!\w)", body, re.IGNORECASE) and not re.match(
+            r"n/a:\s*\S", body, re.IGNORECASE
+        ):
+            problems.append(f"n/a needs a reason, `n/a: <reason>`: {name}")
+    return problems
+
+
+def _spec_template(spec: str) -> None:
+    problems = spec_problems(Path(spec).read_text(encoding="utf-8"))
+    if problems:
+        raise ValueError(f"the spec does not follow docs/spec-template.md: {'; '.join(problems)}")
+
 
 def _submission(payload: dict) -> dict:
     # A review target replaces the work contract: there is no work stage to describe.
@@ -336,6 +387,8 @@ def _submission(payload: dict) -> dict:
         _review_fields(data)
     else:
         _work_fields(data)
+        if data["review"] in SPEC_REVIEWS:
+            _spec_template(data["spec"])
     if "base" in data:
         _base_field(data, review_only)
     if "public_text" in data:

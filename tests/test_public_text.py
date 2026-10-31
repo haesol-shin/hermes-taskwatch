@@ -7,6 +7,7 @@ import pytest
 from taskwatch.checks import message_problems
 from taskwatch.jobs import Jobs
 from tests.git_fixture import git, make_repo
+from tests.spec_fixture import VALID_SPEC
 from tests.test_job_runner import GOOD_FILES, RECORDS, Env
 from tests.test_jobs import payload
 
@@ -63,6 +64,7 @@ def test_one_blank_line_must_follow_the_subject(text):
 def code_payload(tmp_path: Path, units) -> dict:
     repo = make_repo(tmp_path, "repo")
     data = payload(tmp_path)
+    Path(data["spec"]).write_text(VALID_SPEC, encoding="utf-8")
     return {**data, "review": "code", "target": str(repo), "public_text": units}
 
 

@@ -30,6 +30,7 @@ REQUIRED_SECTIONS = {
         "Incomplete review",
         "Repository conventions",
         "Finding content",
+        "Design questions",
         "Sources",
     ),
     "code.md": (
@@ -38,6 +39,7 @@ REQUIRED_SECTIONS = {
         "Quality",
         "Failure modes",
         "Public text",
+        "Scope and write targets",
         "Re-review",
         "Sources",
     ),

@@ -76,3 +76,44 @@ def _finding_lines(body: str, verdict: str) -> list[dict]:
     if verdict == "PASS" and any(f["severity"] in {"P0", "P1"} for f in findings):
         raise ValueError("a PASS cannot carry a P0 or P1 finding")
     return findings
+
+
+DESIGN_KEYS = (
+    "root_cause",
+    "alternatives",
+    "one_home",
+    "overlaps",
+    "needed_now",
+    "repeated_judgment",
+    "portability",
+    "choices",
+)
+_ANSWERS = ("ok", "finding", "na")
+
+
+def _design_check(body: str, findings: list[dict]) -> dict[str, dict[str, str]]:
+    """The `design_check` of the verdict line. The shape is checked, never the meaning."""
+    check = _json_lines(body, "verdict")[0].get("design_check")
+    if not isinstance(check, dict) or set(check) != set(DESIGN_KEYS):
+        raise ValueError(
+            f"the verdict line needs a design_check with the keys {', '.join(DESIGN_KEYS)}"
+        )
+    answers: dict[str, dict[str, str]] = {}
+    before = None
+    for key in DESIGN_KEYS:
+        item = check[key]
+        answer = item.get("answer") if isinstance(item, dict) else None
+        evidence = item.get("evidence") if isinstance(item, dict) else None
+        if answer not in _ANSWERS:
+            raise ValueError(f"design_check {key} needs an answer ok, finding or na")
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise ValueError(f"design_check {key} needs nonempty evidence")
+        if evidence.strip() == before:
+            raise ValueError(f"design_check {key} repeats the evidence of the key before it")
+        if answer == "finding" and not any(f["rule"] == f"design/{key}" for f in findings):
+            raise ValueError(
+                f"design_check {key} is a finding but no finding has rule design/{key}"
+            )
+        answers[key] = {"answer": answer, "evidence": evidence.strip()}
+        before = evidence.strip()
+    return answers
