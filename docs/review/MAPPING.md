@@ -71,7 +71,7 @@ The default role is a subset of the edited role. Where the two disagree, the edi
 
 | Rule | Where it lives |
 | --- | --- |
-| Precedence: the user's approval and the spec override these rules | C-1 |
+| Precedence: the user's approval and the spec override these rules | C-1. Narrowed: an owner decision overrides; any other choice in the spec is the writer's and is reviewed |
 | 1. Intent and source: judge against what was asked and why; report a request that contradicts a cited decision | C-2, C-3, C-1. Where the intent line and the quoted decisions arrive: launch layer |
 | 2. Evidence: every finding cites a location and is marked verified or unverified | C-5 |
 | 3. Group: one finding per cause | C-7 |
@@ -86,4 +86,4 @@ The default role is a subset of the edited role. Where the two disagree, the edi
 
 The rules that were already in this folder keep their ids. The mapping above added or widened these: K-2 (start from the patch, governing documents, search for changed symbols), K-4 (no unstated assumption), K-6 (changelog line), K-11 (say which tests ran), C-10 (the assignment gives the round and prior findings), C-15 (write modes, temporary copy), and C-17 (finding content, finding headings and rule ids).
 
-K-15 to K-18 are new: they cover the public text of a pull request, which is reviewed with the diff it describes.
+K-15 to K-18 are new: they cover the public text of a pull request, which is reviewed with the diff it describes. C-18 and K-19 are new: C-18 answers the design questions for a code or design review, and K-19 compares what a change writes outside the workspace with the approval scope. C-1 and the third bullet of K-4 changed so that only an owner decision is outside review.

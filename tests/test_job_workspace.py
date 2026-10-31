@@ -12,6 +12,7 @@ from taskwatch.job_cli import main as cli_main
 from taskwatch.job_env import job_environment
 from taskwatch.jobs import JobConfig, Jobs, JobState, _digest, _stamp, load_job_config
 from tests.git_fixture import git, make_repo
+from tests.spec_fixture import VALID_SPEC
 from tests.test_job_scan import Board
 
 ENV = job_environment({})
@@ -48,7 +49,7 @@ def remote(tmp_path: Path) -> Remote:
 
 def code_job(tmp_path: Path, target: Path, **extra: object) -> JobState:
     (tmp_path / "intent.md").write_text("intent", encoding="utf-8")
-    (tmp_path / "spec.md").write_text("spec", encoding="utf-8")
+    (tmp_path / "spec.md").write_text(VALID_SPEC, encoding="utf-8")
     payload = {
         "receipt_key": f"k{len(list(tmp_path.iterdir()))}",
         "approval_source": "msg-1",

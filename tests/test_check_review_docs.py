@@ -142,3 +142,20 @@ def test_mapping_names_only_rules_that_exist():
 def test_no_rule_text_is_repeated_across_the_guidelines():
     texts = list(rule_lines(ROOT / "docs" / "review").values())
     assert len(texts) == len(set(texts))
+
+
+def test_renaming_the_design_question_or_scope_sections_fails(tmp_path: Path):
+    for name in CHECKER.REQUIRED_FILES:
+        text = (ROOT / "docs" / "review" / name).read_text(encoding="utf-8")
+        text = text.replace("## Design questions", "## Design stuff")
+        text = text.replace("## Scope and write targets", "## Writes")
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    errors = CHECKER.check_review_dir(tmp_path)
+    assert "common.md: missing section: Design questions" in errors
+    assert "code.md: missing section: Scope and write targets" in errors
+
+
+def test_the_design_question_and_scope_rules_exist():
+    common = (ROOT / "docs" / "review" / "common.md").read_text(encoding="utf-8")
+    code = (ROOT / "docs" / "review" / "code.md").read_text(encoding="utf-8")
+    assert "**C-18.**" in common and "**K-19.**" in code

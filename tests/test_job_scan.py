@@ -19,6 +19,7 @@ from taskwatch.jobs import (
     JobState,
     progress_fingerprint,
 )
+from tests.spec_fixture import VALID_SPEC
 
 BOOT = "boot-1"
 STALL = 100
@@ -71,7 +72,7 @@ class Board:
         base = self.root / "src"
         base.mkdir(exist_ok=True)
         (base / "intent.md").write_text("intent", encoding="utf-8")
-        (base / "spec.md").write_text("spec", encoding="utf-8")
+        (base / "spec.md").write_text(VALID_SPEC, encoding="utf-8")
         target_dir = self.root / (target or f"target-{self.count}")
         target_dir.mkdir(exist_ok=True)
         payload = {

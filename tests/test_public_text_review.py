@@ -12,10 +12,11 @@ from taskwatch.job_cli import main
 from taskwatch.job_delivery import _message
 from taskwatch.job_env import job_environment
 from tests.git_fixture import git
-from tests.test_job_runner import PASS
 from tests.test_public_text import UnitEnv
+from tests.verdicts import CODE_PASS
 
-REPLY = {"reply": f"{PASS}\nNo findings."}
+REPLY = {"reply": f"{CODE_PASS}\nNo findings."}
+PLAIN_PASS = '{"verdict": "PASS", "blocking": false, "reviewer": "r"}'
 
 
 @pytest.fixture
@@ -280,3 +281,12 @@ def test_delivery_leaves_out_a_p3_finding_and_keeps_other_findings_apart(unit_en
     )
     assert "K-6" not in message and "a.py:1" not in message
     assert "- P2 other (other): b.py:2" in message and "- P2 other (other): c.py:3" in message
+
+
+def test_a_code_review_without_a_design_check_is_not_accepted(unit_env):
+    unit_env.scenario([{"reply": PLAIN_PASS}])
+    unit_env.commit("feat(x): add\n\nWhy.")
+    assert unit_env.problems() == []
+    assert unit_env.run("review") == 0
+    record = unit_env.get().reviews[-1]
+    assert not record["ok"] and any("design_check" in p for p in record["problems"])

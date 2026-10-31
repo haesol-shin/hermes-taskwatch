@@ -11,8 +11,9 @@ from taskwatch import job_findings, job_runner
 from taskwatch.executor import _finding_lines
 from taskwatch.job_findings import notes, repeated_rules, sync_index
 from tests.git_fixture import git
-from tests.test_job_runner import FAIL, PASS
 from tests.test_public_text import UnitEnv
+from tests.verdicts import CODE_FAIL as FAIL
+from tests.verdicts import CODE_PASS as PASS
 
 
 def line(ident="F1", severity="P2", category="evidence", rule="K-7", location="a.py:1") -> str:

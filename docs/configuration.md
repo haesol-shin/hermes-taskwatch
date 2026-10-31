@@ -128,6 +128,15 @@ Pass a JSON file to `taskwatch --root <root> submit <file>`. Example:
 `design`, or `source` (a document that cites sources, such as research notes, summaries,
 or comparisons). Only `code` also runs the work in a Git worktree, because a code review
 reads the Git diff.
+A job with `review` `code` or `design` and a work contract needs a spec that follows
+[docs/spec-template.md](spec-template.md): each of its twelve `## ` headings is present and
+answered, or says `n/a: <reason>`. Submit refuses a missing or empty heading by name, and a
+bare `n/a`. A `source` job and a review-only job skip this check. For these two kinds the
+reviewer's verdict line also carries a `design_check` of eight answers (`root_cause`,
+`alternatives`, `one_home`, `overlaps`, `needed_now`, `repeated_judgment`, `portability`,
+`choices`), each `ok`, `finding` or `na` with its evidence; the runner checks only its shape.
+The review message names `approval_source` and `approval_scope`, so the reviewer can tell an
+owner decision from a writer's choice and compare the writes of the change with the scope.
 Output paths are relative to the job workspace, checklist and progress paths to the job
 folder; none can traverse outside its base. `check_command` runs as argv without an implicit
 shell; name a shell explicitly only when the approved check needs one.

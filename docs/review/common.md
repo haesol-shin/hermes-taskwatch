@@ -4,7 +4,7 @@ Use this file for every review, then the review file the assignment names.
 
 ## Precedence
 
-**C-1.** The requester's approval and the task spec override this folder. These rules do not override a decision the requester already made. If the request contradicts a cited decision, report that conflict.
+**C-1.** A decision the requester made overrides this folder. An owner decision is a choice quoted in the approval source or the intent, or quoted as an owner statement in the spec. Any other choice in the spec is the writer's choice and is in scope of the review. If the request contradicts a cited owner decision, report that conflict.
 
 ## Purpose
 
@@ -70,6 +70,21 @@ P0 and P1 block. P2 and P3 do not. A rule break is P0 only when it is about runt
 ## Finding content
 
 **C-17.** A finding states the problem, what triggers it, its impact, whether the evidence is verified or unverified, and the fix, in a neutral tone. Offer a replacement only when it is concrete code or text that can be applied as written. Start each finding with a heading `### F<n>`, number them in order, and name the rule id the finding breaks, or `other` when no rule applies.
+
+## Design questions
+
+**C-18.** For a code or design review, answer each `design_check` key from evidence you found, not from the spec's own wording. Each answer is `ok`, `finding` or `na`, with the evidence: a `file:line`, a command and its result, or a quote. `na` states the reason. A `finding` has a matching finding with the rule `design/<key>`. The evidence of each key differs from the key before it.
+
+- `root_cause`: the cause the change removes, and how you verified that it is present today.
+- `alternatives`: at least two options were compared, one of them common practice with a source, and the reason the others were not chosen.
+- `one_home`: each new rule or fact, and the one file that owns it; a copy elsewhere is a finding.
+- `overlaps`: each new stage, approval or check, and the existing step that already covers it, or none.
+- `needed_now`: each new option, flag, mode or name, and the user or measured case that needs it now.
+- `repeated_judgment`: a judgment that will repeat, and the mechanical rule that would replace it.
+- `portability`: the paths, layout, tools and accounts the change assumes about other users.
+- `choices`: the writer's choices that the owner did not ask for, including those the spec leaves unlisted.
+
+You may judge a writer's choice. You may not override an owner decision: when a quoted owner decision covers the choice, answer `ok` and state any concern as P3. When the decision rests on a premise you can show is false, report it as a P2 `premise` finding for the owner, not as a blocker. A writer's choice is P1 only when you show that it contradicts the intent, the approval scope or a verified fact; otherwise it is P2, and the fix is a spec revision.
 
 ## Sources
 

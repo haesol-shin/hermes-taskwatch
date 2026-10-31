@@ -19,8 +19,9 @@ from taskwatch.job_runner import _basis, _fingerprint
 from taskwatch.job_scan import scan_jobs
 from taskwatch.jobs import Jobs, JobState, load_job_config
 from tests.git_fixture import make_repo
-from tests.test_job_runner import GIT, PASS, Env, work_turn
+from tests.test_job_runner import GIT, Env, work_turn
 from tests.test_job_scan import Board
+from tests.verdicts import CODE_PASS
 
 SENDER = r"""
 import json, os, signal, sys, time
@@ -494,7 +495,7 @@ def test_git_ignored_output_is_checked_at_delivery(
     env.scenario(
         [
             {"writes": {**work_turn()["writes"], ".gitignore": "out.txt\n"}, "run": commit},
-            {"reply": PASS},
+            {"reply": CODE_PASS},
         ]
     )
     assert env.run("work") == 0
