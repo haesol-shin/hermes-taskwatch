@@ -144,9 +144,22 @@ the conversation.
 `approval_required` defaults to `false`. If `true`, the first scan moves the job
 to `approval_wait` before its first work run. `approve` clears that flag and
 allows work to start. A later `wait` records the current step for approval.
+
 `approval_scope` is a recorded boundary, not operating-system isolation.
 The runner's shell tools have the user's permissions; instructions and
 explicit approval records cannot enforce those permissions.
+
+Code jobs that build a result accept an optional `public_text` list for the pull
+requests the job produces. Each unit is `{"id": "pr1", "base": "<ref>", "head": "HEAD"}`;
+`head` defaults to `HEAD`, and `id` is lowercase letters, digits and hyphens. For a
+stacked series the `base` of a unit is the `head` of the one before. A `base` must
+resolve in `target` at submit unless it is another unit's `head`; refs are resolved
+again in the work folder at every check. The worker writes `pr/<id>/title.txt` and
+`pr/<id>/body.md` in the job folder, never in the work folder. The check fails when a
+file is missing, a unit has no commits, or a commit message breaks the common rules:
+title is `type(scope): summary` or `type: summary` and at most 72 characters, one blank
+line follows the title, no line is longer than 72 characters, no trailer line
+(`Co-authored-by:`, `Signed-off-by:` and similar). There is no limit on bullets.
 
 The check command must exit `0`. Required outputs and a nonempty passing
 checklist must also exist after the command finishes. Minimal checklist:

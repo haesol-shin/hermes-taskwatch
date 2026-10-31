@@ -36,20 +36,22 @@ CI runs the same commands. A pull request must pass all of them.
 A commit message explains why the code is the way it is. The diff already shows what changed, so write only what the diff cannot tell a future reader.
 
 - Title: [Conventional Commits](https://www.conventionalcommits.org/), `type(scope): summary` in the imperative, in English, 72 characters or fewer (about 50 is best). No trailers.
-- Body: up to three bullets, each one line of 72 characters or fewer:
-  1. The problem or the reason for the change.
-  2. The new behavior, described as behavior, not as a file list.
-  3. A rejected alternative, only when another approach looks more natural (`Rejected: ...`).
-- Do not list files, restate the diff, describe the review process, or paste test results. Test results go in the pull request.
+- Body: why the code is the way it is. There is no limit on the number of lines or bullets.
+  - Required: the problem or the reason for the change.
+  - Only when useful: a rejected alternative, when another approach looks more natural (`Rejected: ...`).
+  - Only when the title and the diff do not show it: the new behavior, described as behavior, not as a file list.
+  - Each line is 72 characters or fewer.
+- Do not list files, restate the diff, describe the review process, or paste test results. Test results, review and known limits go in the pull request.
+- The job runner checks these rules for the commits of a job's pull request units: title shape and length, one blank line after the title, lines of 72 characters or fewer, no trailer lines. A failure goes back to the worker like any failed check.
 
 Example:
 
 ```
 fix(jobs): reject a review of an older result
 
-- A pass on an earlier commit could deliver a result that changed later
-- The runner now compares the reviewed fingerprint with the current one
-- Rejected: warn only, because delivery would already go ahead
+A pass on an earlier commit could deliver a result that changed later.
+The runner compares the reviewed fingerprint with the current one.
+Rejected: warn only, because delivery would already go ahead.
 ```
 
 ## Pull requests

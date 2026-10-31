@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import job_workspace
-from .checks import checklist_problems
+from .checks import checklist_problems, message_problems
 from .evidence import basis_of
 from .executor import _verdict_line
 from .fingerprint import (
@@ -29,11 +29,21 @@ from .fingerprint import (
     _git_ok,
     files_fingerprint,
     head_sha,
+    range_messages,
+    resolve_commit,
     uncommitted_changes,
 )
 from .job_env import job_environment
 from .job_rpc import RpcAborted, RpcClient, RpcError
-from .jobs import MAX_FIX_ROUNDS, MAX_RECOVERIES, JobConfig, Jobs, JobState, progress_fingerprint
+from .jobs import (
+    MAX_FIX_ROUNDS,
+    MAX_RECOVERIES,
+    UNIT_FILES,
+    JobConfig,
+    Jobs,
+    JobState,
+    progress_fingerprint,
+)
 from .review_docs import docs_dir, profile_names
 
 STEPS = frozenset({"work", "fix", "check", "review"})
@@ -587,6 +597,32 @@ def _basis(job: JobState, folder: Path) -> str:
     return basis_of(Path(job.intent), Path(job.spec), _guidelines(job, folder))
 
 
+def _unit_file(folder: Path, unit_id: str, name: str) -> Path:
+    return folder / "pr" / unit_id / name
+
+
+def _text_problems(job: JobState, workspace: Path, env: Mapping[str, str]) -> list[str]:
+    """The common commit message rules for each unit's commits; refs resolve at every check."""
+    problems = []
+    for unit in job.public_text:
+        name = f"public text {unit['id']}"
+        try:
+            for ref in (unit["base"], unit["head"]):
+                try:
+                    resolve_commit(workspace, ref, env)
+                except ValueError as exc:
+                    raise ValueError(f"{ref} does not resolve: {exc}") from exc
+            commits = range_messages(workspace, unit["base"], unit["head"], env)
+        except (ValueError, OSError) as exc:
+            problems.append(f"{name}: {exc}")
+            continue
+        if not commits:
+            problems.append(f"{name}: no commits in {unit['base']}..{unit['head']}")
+        for sha, message in commits:
+            problems += [f"{name}: commit {sha[:7]}: {p}" for p in message_problems(message)]
+    return problems
+
+
 def _file_problems(job: JobState, workspace: Path, folder: Path) -> list[str]:
     problems = []
     for base, rel in [*((workspace, item) for item in job.outputs), (folder, job.progress)]:
@@ -601,6 +637,10 @@ def _file_problems(job: JobState, workspace: Path, folder: Path) -> list[str]:
         problems.append(f"checklist is missing: {job.checklist}")
     elif failing:
         problems.append(f"checklist items do not pass: {', '.join(failing)}")
+    for unit in job.public_text:
+        for name in UNIT_FILES:
+            if not _unit_file(folder, unit["id"], name).is_file():
+                problems.append(f"required file is missing: pr/{unit['id']}/{name}")
     return problems
 
 
@@ -652,6 +692,7 @@ def _check_step(ctx: Ctx) -> int:
     run, problems = _run_command(ctx, seq)
     # After the command: it may have changed or removed what the checks require.
     problems += _file_problems(job, ctx.workspace, ctx.folder)
+    problems += _text_problems(job, ctx.workspace, ctx.env)
     fingerprint = basis = ""
     try:
         fingerprint = _fingerprint(job, ctx.workspace, ctx.env)

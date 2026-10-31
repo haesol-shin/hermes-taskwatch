@@ -45,7 +45,7 @@ GIT = [
 
 
 class Env:
-    def __init__(self, tmp_path: Path, monkeypatch, review: str = "source", target=None):
+    def __init__(self, tmp_path: Path, monkeypatch, review: str = "source", target=None, **extra):
         self.tmp = tmp_path
         self.jobs = Jobs(tmp_path / "root")
         self.config = JobConfig(omp_command=(sys.executable, str(FAKE)), rpc_timeout=5)
@@ -75,6 +75,7 @@ class Env:
                 "checklist": "checklist.json",
                 "progress": "PROGRESS.md",
                 "inputs": {"work": [str(tmp_path / "w.txt")], "review": [str(tmp_path / "r.txt")]},
+                **extra,
             },
             1000.0,
         )

@@ -1,0 +1,177 @@
+"""Pull request units: submit validation and the commit message rules of the check step."""
+
+from pathlib import Path
+
+import pytest
+
+from taskwatch.checks import message_problems
+from taskwatch.jobs import Jobs
+from tests.git_fixture import git, make_repo
+from tests.test_job_runner import GOOD_FILES, RECORDS, Env
+from tests.test_jobs import payload
+
+# --- the message rules ---------------------------------------------------------------------
+
+
+def test_a_plain_message_passes():
+    assert message_problems("fix(jobs): reject a stale review\n\nThe reason, in a line.\n") == []
+    assert message_problems("fix: reject\n") == []
+
+
+@pytest.mark.parametrize("subject", ["Fix things", "fix(a b): x", "fix(): x", "fix:x", "fix: "])
+def test_a_subject_without_the_shape_fails(subject):
+    assert message_problems(subject)
+
+
+def test_subject_of_73_characters_fails_and_72_passes():
+    head = "fix(jobs): "
+    assert message_problems(head + "x" * (72 - len(head))) == []
+    assert message_problems(head + "x" * (73 - len(head)))
+
+
+def test_body_line_of_73_characters_fails_and_72_passes():
+    assert message_problems("fix: x\n\n" + "y" * 72) == []
+    problems = message_problems("fix: x\n\n" + "y" * 73)
+    assert len(problems) == 1 and "line 3" in problems[0]
+
+
+def test_five_bullets_pass():
+    body = "\n".join(f"- reason {n}" for n in range(5))
+    assert message_problems(f"fix: x\n\n{body}\n") == []
+
+
+@pytest.mark.parametrize(
+    "line", ["Co-authored-by: A <a@example.invalid>", "Signed-off-by: A", "cc: someone"]
+)
+def test_a_trailer_fails(line):
+    problems = message_problems(f"fix: x\n\nwhy\n\n{line}\n")
+    assert len(problems) == 1 and "trailer" in problems[0]
+
+
+def test_rejected_and_other_labels_are_not_trailers():
+    assert message_problems("fix: x\n\nRejected: other way\nCause: old\n") == []
+
+
+@pytest.mark.parametrize("text", ["fix: x\nbody", "fix: x\n\n\nbody"])
+def test_one_blank_line_must_follow_the_subject(text):
+    assert any("blank line" in p for p in message_problems(text))
+
+
+# --- submit ---------------------------------------------------------------------------------
+
+
+def code_payload(tmp_path: Path, units) -> dict:
+    repo = make_repo(tmp_path, "repo")
+    data = payload(tmp_path)
+    return {**data, "review": "code", "target": str(repo), "public_text": units}
+
+
+def test_submit_defaults_head_and_keeps_units(tmp_path):
+    job = Jobs(tmp_path / "root").submit(code_payload(tmp_path, [{"id": "pr", "base": "main"}]), 10)
+    assert [dict(u) for u in job.public_text] == [{"id": "pr", "base": "main", "head": "HEAD"}]
+
+
+def test_submit_accepts_a_stacked_base_that_is_another_units_head(tmp_path):
+    units = [
+        {"id": "a", "base": "main", "head": "step-a"},
+        {"id": "b", "base": "step-a", "head": "HEAD"},
+    ]
+    assert len(Jobs(tmp_path / "root").submit(code_payload(tmp_path, units), 10).public_text) == 2
+
+
+@pytest.mark.parametrize(
+    "units",
+    [
+        [{"id": "pr", "base": "no-such-ref"}],
+        [{"id": "pr", "base": "main"}, {"id": "pr", "base": "main"}],
+        [{"id": "Bad Id", "base": "main"}],
+        [{"id": "pr", "base": "--upload-pack=x"}],
+        [{"id": "pr"}],
+        [],
+    ],
+)
+def test_submit_refuses_bad_units(tmp_path, units):
+    jobs = Jobs(tmp_path / "root")
+    with pytest.raises(ValueError):
+        jobs.submit(code_payload(tmp_path, units), 10)
+    assert jobs.load() == {}
+
+
+def test_submit_refuses_units_on_a_job_that_builds_no_commits(tmp_path):
+    data = {**payload(tmp_path), "public_text": [{"id": "pr", "base": "main"}]}
+    with pytest.raises(ValueError, match="public_text"):
+        Jobs(tmp_path / "root").submit(data, 10)
+
+
+# --- the check step -------------------------------------------------------------------------
+
+
+class UnitEnv(Env):
+    """A code job whose work folder is a real worktree with one unit."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path, "repo")
+        super().__init__(
+            tmp_path,
+            monkeypatch,
+            review="code",
+            target=repo,
+            public_text=[{"id": "pr", "base": "main"}],
+        )
+        assert self.run("check") == 0  # creates the work folder; nothing is built yet
+        self.tree = self.folder() / "worktree"
+        for name, text in GOOD_FILES.items():
+            if name in RECORDS:
+                (self.folder() / name).write_text(text, encoding="utf-8")
+        (self.folder() / "pr" / "pr").mkdir(parents=True, exist_ok=True)
+        self.write_text("title.txt", "feat(x): add\n")
+        self.write_text("body.md", "body\n")
+
+    def write_text(self, name: str, text: str) -> None:
+        (self.folder() / "pr" / "pr" / name).write_text(text, encoding="utf-8")
+
+    def commit(self, message: str) -> None:
+        (self.tree / "out.txt").write_text("ok\n", encoding="utf-8")
+        git(self.tree, "add", "out.txt")
+        git(self.tree, "commit", "-m", message)
+
+    def problems(self) -> list[str]:
+        assert self.run("check") == 0
+        return list(self.get().checks[-1]["problems"])
+
+
+@pytest.fixture
+def unit_env(tmp_path, monkeypatch):
+    return UnitEnv(tmp_path, monkeypatch)
+
+
+def test_a_good_unit_reaches_review(unit_env):
+    unit_env.commit("feat(x): add\n\nWhy it is needed.")
+    assert unit_env.problems() == []
+    assert unit_env.get().stage == "review"
+
+
+def test_a_failing_message_rule_goes_to_the_fix_round_without_a_review(unit_env):
+    unit_env.commit("feat(x): " + "y" * 70)
+    problems = unit_env.problems()
+    assert len(problems) == 1 and "public text pr: commit" in problems[0]
+    job = unit_env.get()
+    assert job.stage == "fix" and "characters" in job.error and job.reviews == ()
+
+
+def test_a_missing_body_is_a_check_problem(unit_env):
+    unit_env.commit("feat(x): add\n\nWhy.")
+    (unit_env.folder() / "pr" / "pr" / "body.md").unlink()
+    assert unit_env.problems() == ["required file is missing: pr/pr/body.md"]
+
+
+def test_a_unit_without_commits_is_a_check_problem(unit_env):
+    problems = unit_env.problems()
+    assert any("no commits" in p for p in problems)
+
+
+def test_an_unresolved_head_is_a_check_problem(unit_env):
+    unit_env.commit("feat(x): add\n\nWhy.")
+    unit = {**unit_env.get().public_text[0], "head": "gone"}
+    assert unit_env.run("check", public_text=(unit,)) == 0
+    assert any("gone" in p for p in unit_env.get().checks[-1]["problems"])
