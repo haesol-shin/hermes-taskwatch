@@ -160,6 +160,9 @@ file is missing, a unit has no commits, or a commit message breaks the common ru
 title is `type(scope): summary` or `type: summary` and at most 72 characters, one blank
 line follows the title, no line is longer than 72 characters, no trailer line
 (`Co-authored-by:`, `Signed-off-by:` and similar). There is no limit on bullets.
+The review reads the same text, `taskwatch text <job> [--pr <id>] --out <dir>` hands out the
+reviewed title and body, and the delivery message names each unit's folder and text
+fingerprint; see [review records](checks.md#review-records).
 
 The check command must exit `0`. Required outputs and a nonempty passing
 checklist must also exist after the command finishes. Minimal checklist:
@@ -284,12 +287,14 @@ a readable JSON `error`: a timeout or partial send may already have delivered co
 For a job at `deliver_pending`, `scan` runs this step under the state lock after
 the old unit has been released. It writes `delivery.txt` (title from the first
 prompt line, job id, latest review verdict, absolute output paths, result
-workspace, review body file, and check log path) and `delivery-review.txt` in the
+workspace, review body file, check log path, every P0, P1 and P2 finding with
+findings of one rule on one line, and the `Public text` folder and `Text fingerprint`
+of each unit) and `delivery-review.txt` in the
 job folder, records the attempt as `started` with the message file and the
 SHA-256 of `delivery.txt`, then runs the command with a fixed 60 second timeout.
 
-Before sending, the result fingerprint, declared output content digest, and review
-basis must match the accepted PASS. The output digest also covers Git-ignored files.
+Before sending, the result fingerprint, declared output content digest, review
+basis and the text fingerprint of each unit must match the accepted PASS. The output digest also covers Git-ignored files.
 Changed, missing, or unreadable evidence returns to `check`, spending the existing
 recovery budget; exhaustion stops at `user_wait/result_unstable`.
 

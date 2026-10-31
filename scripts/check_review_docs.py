@@ -37,6 +37,7 @@ REQUIRED_SECTIONS = {
         "Reporting bar",
         "Quality",
         "Failure modes",
+        "Public text",
         "Re-review",
         "Sources",
     ),

@@ -2,7 +2,7 @@
 
 This text applies only when a taskwatch job started the review. It adds to the review guidelines and never changes a judging rule.
 
-**Inputs.** Everything the assignment gives you comes from the message above: the intent file, the spec file, the reviewed result or target, the original request, and any review inputs. Read those paths. The check output, when named, is the result of the deterministic check; it is not a verdict. Do not look for other assignment inputs; the repository rules the guidelines name are still read.
+**Inputs.** Everything the assignment gives you comes from the message above: the intent file, the spec file, the reviewed result or target, the original request, and any review inputs. When the message names a public text snapshot, it holds the title, body and commit messages of each pull request unit, with the commit range of each unit; the snapshot is read only. Read those paths. The check output, when named, is the result of the deterministic check; it is not a verdict. Do not look for other assignment inputs; the repository rules the guidelines name are still read.
 
 **Rounds.** Taskwatch counts the rounds and states the round number in the message. It enforces the round cap itself and does not tell you the cap, so the round-cap rule of the guidelines has nothing to act on in your review: judge the round in front of you. A round whose answer cannot be accepted still counts as a round.
 
@@ -16,4 +16,12 @@ This text applies only when a taskwatch job started the review. It adds to the r
 - `FAIL` means a P0 or P1 finding remains, or the review is incomplete.
 - Write no other line that starts with `{` and contains `"verdict"`.
 
-After that line, give every finding with its location. Taskwatch records your whole message as the review; a missing or second verdict line makes the answer unacceptable and costs a round.
+After that line, give every finding with its location. Each finding has a heading `### F<n>` and one more line that is a JSON object:
+
+{"finding": "F<n>", "severity": "P0" to "P3", "category": "intent", "evidence", "behavior", "clarity" or "other", "rule": "<rule id, or other>", "location": "<file:line, quote or section>"}
+
+- The headings and the finding lines must name the same ids, and an id is used once.
+- A `PASS` cannot carry a P0 or P1 finding line.
+- Taskwatch reads only these lines and the verdict line, never the free text.
+
+Taskwatch records your whole message as the review; a missing or second verdict line, or a finding that breaks these rules, makes the answer unacceptable and costs a round.

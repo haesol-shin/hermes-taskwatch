@@ -6,6 +6,7 @@ path list, so an add, delete, or rename cannot keep the old value.
 """
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -69,6 +70,30 @@ def range_messages(
         if sha:
             rows.append((sha, message.rstrip("\n")))
     return rows
+
+
+def tree_sha(repo: Path, commit: str, env: Mapping[str, str] | None = None) -> str:
+    out = _git_ok(repo, ["rev-parse", "--verify", f"{commit}^{{tree}}"], env=env)
+    return git_fingerprint(out.decode("utf-8").strip())
+
+
+EVIDENCE_PREFIX = "Review evidence:"
+
+
+def without_evidence(body: str) -> str:
+    """The body without its one `Review evidence:` line, which names the review result."""
+    lines = body.split("\n")
+    for index, line in enumerate(lines):
+        if line.startswith(EVIDENCE_PREFIX):
+            del lines[index]
+            break
+    return "\n".join(lines).rstrip("\n")
+
+
+def text_fingerprint(title: str, body: str, messages: Sequence[str]) -> str:
+    """Hash of a unit's title, body and commit messages. The evidence line is left out."""
+    rows = [title.rstrip("\n"), without_evidence(body), [m.rstrip("\n") for m in messages]]
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def files_fingerprint(root: Path, relative_paths: Sequence[str]) -> str:

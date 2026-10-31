@@ -30,6 +30,10 @@ def parser() -> argparse.ArgumentParser:
     watch.add_argument("job")
     watch.add_argument("--timeout", type=_seconds(1), default=82800, help="Seconds (default 82800)")
     watch.add_argument("--interval", type=_seconds(5), default=30, help="Poll seconds (min 5)")
+    text = commands.add_parser("text", help="Write the reviewed title and body of a pull request")
+    text.add_argument("job")
+    text.add_argument("--pr", help="Unit id; optional when the job has one unit")
+    text.add_argument("--out", type=Path, required=True, help="Folder for title.txt and body.md")
     for name in ("cancel", "wait", "approve", "resume"):
         action = commands.add_parser(name)
         action.add_argument("job")
@@ -56,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     ).resolve()
     if args.command == "watch":
         return _watch(args, root)
+    if args.command == "text":
+        return _text(args, root)
     try:
         result = _dispatch(args, root)
     except (ValueError, OSError, RecordError, KeyError) as exc:
@@ -75,6 +81,23 @@ def _watch(args: argparse.Namespace, root: Path) -> int:
         print(f"taskwatch: {exc}", file=sys.stderr)
         return 1
     print(report, file=sys.stderr if code == 2 else sys.stdout)
+    return code
+
+
+def _text(args: argparse.Namespace, root: Path) -> int:
+    """0 wrote the copy, 2 the text or snapshot changed since review, 3 no review passed."""
+    from .job_env import job_environment
+    from .job_text import reviewed_copy
+
+    try:
+        jobs = Jobs(root)
+        job = jobs.load()[args.job]
+        env = job_environment(load_job_config(root).env)
+        code, lines = reviewed_copy(job, env, jobs.folder(job), args.pr, args.out)
+    except (ValueError, OSError, RecordError, KeyError) as exc:
+        print(f"taskwatch: {exc}", file=sys.stderr)
+        return 1
+    print("\n".join(lines), file=sys.stderr if code else sys.stdout)
     return code
 
 

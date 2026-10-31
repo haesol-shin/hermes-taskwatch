@@ -12,6 +12,7 @@ from .evidence import basis_of
 from .fingerprint import files_fingerprint
 from .job_env import job_environment
 from .job_runner import _fingerprint, _kill_group, _requeue, _write_durable
+from .job_text import texts_changed
 from .jobs import JobConfig, Jobs, JobState
 
 DELIVERY_TIMEOUT = 60
@@ -37,6 +38,13 @@ def deliver_job(jobs: Jobs, config: JobConfig, job: JobState, now: float) -> Job
             == review.get("fingerprint")
             and files_fingerprint(Path(job.workspace), job.outputs)
             == review.get("outputs_fingerprint")
+            and not texts_changed(
+                job,
+                Path(job.workspace),
+                jobs.folder(job),
+                job_environment(config.env),
+                review.get("texts", {}),
+            )
             and bool(job.guideline_hashes)
             and basis_of(
                 Path(job.intent), Path(job.spec), tuple(Path(p) for p in job.guideline_hashes)
@@ -94,6 +102,36 @@ def _subject(job: JobState) -> list[str]:
     return ["Reviewed files:", *(f"- {Path(job.workspace) / name}" for name in target["files"])]
 
 
+def _finding_lines(review: dict) -> list[str]:
+    """Every P0, P1 and P2 finding, one line per kind; P3 stays in the review record.
+
+    A kind is a rule id. `other` names no kind, so each such finding keeps its own line.
+    """
+    groups: dict[str, list[dict]] = {}
+    for finding in review.get("findings", []):
+        if finding["severity"] != "P3":
+            key = finding["rule"] if finding["rule"] != "other" else f"other {finding['finding']}"
+            groups.setdefault(key, []).append(finding)
+    ranked = sorted(groups.items(), key=lambda g: (min(f["severity"] for f in g[1]), g[0]))
+    lines = []
+    for _key, items in ranked:
+        severity = min(f["severity"] for f in items)
+        categories = "/".join(sorted({f["category"] for f in items}))
+        count = f" x{len(items)}" if len(items) > 1 else ""
+        places = "; ".join(dict.fromkeys(f["location"] for f in items))
+        lines.append(f"- {severity} {items[0]['rule']} ({categories}){count}: {places}")
+    return ["Findings (P0 to P2):", *lines] if lines else ["Findings (P0 to P2): none"]
+
+
+def _text_lines(jobs: Jobs, job: JobState, review: dict) -> list[str]:
+    lines = []
+    for unit in job.public_text:
+        state = review.get("texts", {}).get(unit["id"], {})
+        lines.append(f"Public text {unit['id']}: {jobs.folder(job) / 'pr' / unit['id']}")
+        lines.append(f"Text fingerprint {unit['id']}: {state.get('fingerprint', 'unavailable')}")
+    return lines
+
+
 def _message(jobs: Jobs, job: JobState) -> Path:
     folder = jobs.folder(job)
     review = job.reviews[-1] if job.reviews else {}
@@ -108,6 +146,8 @@ def _message(jobs: Jobs, job: JobState) -> Path:
     ]
     if job.checks:
         lines.append(f"Check: {job.checks[-1]['log']}")
+    lines += _finding_lines(review)
+    lines += _text_lines(jobs, job, review)
     message = folder / "delivery.txt"
     _write_durable(message, "\n".join(lines) + "\n")
     return message
